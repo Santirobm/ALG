@@ -1,0 +1,11 @@
+Seed,Scenario,Selectivity,Variant,p50_us,p95_us,p99_us,QPS,EligibleCount,DistanceComps
+1,R_Local,1,ExactFilteredScan,18.2,19.9,22.8,54266.4,982,982
+1,R_Local,5,ExactFilteredScan,58.4,63,84.7,16730.7,4996,4996
+1,R_Local,10,ExactFilteredScan,101.1,111.2,130.6,9649.24,10039,10039
+1,R_Local,25,ExactFilteredScan,219.7,265.1,319.2,4379.68,24952,24952
+1,R_Local,50,ExactFilteredScan,459.3,571.1,648.4,2102.65,49935,49935
+1,D_Adversarial,1,ExactFilteredScan,17.6,19,21.6,56302.2,982,982
+1,D_Adversarial,5,ExactFilteredScan,61.4,67.7,77.1,16109.1,4996,4996
+1,D_Adversarial,10,ExactFilteredScan,121.1,141.7,171.2,8018.97,10039,10039
+1,D_Adversarial,25,ExactFilteredScan,237.1,393.9,512.1,3756.66,24952,24952
+1,D_Adversarial,50,ExactFilteredScan,450.6,525.9,603.7,2151.12,49935,49935
