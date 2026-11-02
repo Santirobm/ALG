@@ -1,18 +1,26 @@
 import sys
 import os
+os.environ["OMP_NUM_THREADS"] = "1"
+os.environ["OPENBLAS_NUM_THREADS"] = "1"
+os.environ["MKL_NUM_THREADS"] = "1"
+os.environ["VECLIB_MAXIMUM_THREADS"] = "1"
+os.environ["NUMEXPR_NUM_THREADS"] = "1"
+
 import time
 import struct
 import ctypes
 import ctypes.wintypes
 import numpy as np
 import faiss
+faiss.omp_set_num_threads(1)
 
-# --- Windows Native Setup (Affinity & Priority) ---
+# --- Windows Native Setup (Process Affinity & Priority) ---
 kernel32 = ctypes.windll.kernel32
 psapi = ctypes.windll.psapi
 
 HIGH_PRIORITY_CLASS = 0x00000080
 kernel32.SetPriorityClass(kernel32.GetCurrentProcess(), HIGH_PRIORITY_CLASS)
+kernel32.SetProcessAffinityMask(kernel32.GetCurrentProcess(), 1)
 kernel32.SetThreadAffinityMask(kernel32.GetCurrentThread(), 1)
 
 class PMC(ctypes.Structure):

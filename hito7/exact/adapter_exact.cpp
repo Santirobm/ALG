@@ -36,6 +36,7 @@ static float l2_distance_avx2(const float *a, const float *b, uint32_t dim) {
 int main(int argc, char **argv) {
     SetConsoleOutputCP(65001);
     SetPriorityClass(GetCurrentProcess(), HIGH_PRIORITY_CLASS);
+    SetProcessAffinityMask(GetCurrentProcess(), 1ULL);
     SetThreadAffinityMask(GetCurrentThread(), 1ULL);
 
     std::string data_file = "hito7/data/dataset_seed1.bin";

@@ -1,0 +1,15 @@
+Seed,Scenario,Selectivity,Variant,p50_us,p95_us,p99_us,QPS,EligibleCount,DistanceComps
+2,R_Local,10.0,ExactFilteredScan,106.9,136.1,171.4,8881.63,10020,10020
+2,R_Local,12.5,ExactFilteredScan,130.1,145.1,168.9,7510.87,12513,12513
+2,R_Local,15.0,ExactFilteredScan,145.3,179.3,198.2,6550.25,14955,14955
+2,R_Local,17.5,ExactFilteredScan,179.3,258.3,334.4,5081.84,17491,17491
+2,R_Local,20.0,ExactFilteredScan,203.2,312.4,404.3,4411.47,20035,20035
+2,R_Local,22.5,ExactFilteredScan,220.9,341.6,396,4077.61,22547,22547
+2,R_Local,25.0,ExactFilteredScan,243.1,420.7,653.2,3554.84,24972,24972
+2,D_Adversarial,10.0,ExactFilteredScan,108.8,118.9,133,9018.77,10020,10020
+2,D_Adversarial,12.5,ExactFilteredScan,131,151.9,164,7429.09,12513,12513
+2,D_Adversarial,15.0,ExactFilteredScan,151.8,181.2,189.6,6426.59,14955,14955
+2,D_Adversarial,17.5,ExactFilteredScan,178.6,227.9,265.8,5312.29,17491,17491
+2,D_Adversarial,20.0,ExactFilteredScan,199.5,273.6,325.2,4819.18,20035,20035
+2,D_Adversarial,22.5,ExactFilteredScan,222.7,381.7,538,4027.76,22547,22547
+2,D_Adversarial,25.0,ExactFilteredScan,241.9,440.1,695,3514.95,24972,24972

@@ -61,6 +61,7 @@ static double recall_at_k(const std::vector<hnswlib::labeltype> &pred, const Que
 int main(int argc, char **argv) {
     SetConsoleOutputCP(65001);
     SetPriorityClass(GetCurrentProcess(), HIGH_PRIORITY_CLASS);
+    SetProcessAffinityMask(GetCurrentProcess(), 1ULL);
     SetThreadAffinityMask(GetCurrentThread(), 1ULL);
 
     std::string data_file = "hito7/data/dataset_seed1.bin";

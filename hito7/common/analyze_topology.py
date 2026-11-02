@@ -109,8 +109,9 @@ def main():
 
     import pandas as pd
     df = pd.DataFrame(results)
-    df.to_csv("hito7/results/topology_seed1_summary.csv", index=False)
-    print("\nResultados exportados a hito7/results/topology_seed1_summary.csv")
+    out_csv = f"hito7/results/topology_seed{s_idx}_summary.csv"
+    df.to_csv(out_csv, index=False)
+    print(f"\nResultados exportados a {out_csv}")
 
 if __name__ == "__main__":
     main()
