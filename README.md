@@ -1,76 +1,116 @@
 # ALG-HNSW: Plataforma Experimental de Búsqueda Vectorial Filtrada
 
-Plataforma modular para evaluar HNSW bajo predicados de filtrado categóricos y continuos.
+Plataforma de evaluación empírica y benchmarking riguroso para búsqueda de vecinos más cercanos con filtrado categórico y continuo (*Filtered Approximate Nearest Neighbor Search*), evaluando motores aproximados basados en grafos (HNSW), escaneo exhaustivo contiguo vectorizado (ExactScan AVX2) y selectores híbridos adaptativos en lazo cerrado (Hito 8 e Hito 9).
 
-## Nueva ablación 2x2: qsort vs heaps / H2 vs H3-128
+---
 
-Se incorporó `src/heap.c` + `include/heap.h` y un ejecutable nuevo `src/main_ablation.c`.
+## 📌 Estado del Proyecto: Conclusión Científica Formal (Hito 9)
 
-| Caso | Cola de candidatos | Conjunto W | Representación |
-|---|---|---|---|
-| A | qsort + extracción por desplazamiento | qsort | H2 |
-| B | Min-Heap binario | Bounded Max-Heap | H2 |
-| C | qsort + extracción por desplazamiento | qsort | H3-128 |
-| D | Min-Heap binario | Bounded Max-Heap | H3-128 |
+La línea de investigación experimental de ALG ha concluido formalmente en el **Hito 9** tras completar la batería multi-semilla factorial (**Semillas 8, 9 y 10**) en 6 escenarios OOD (*Out-Of-Distribution*) y 252 estratos experimentales con Bootstrap Jerárquico Bi-Nivel.
 
-La selección se controla con `g_hnsw_use_heaps` (0=qsort, 1=heaps). El arnés cambia el modo entre ejecuciones, rota el orden de las cuatro variantes por semilla/escenario y escribe `results/main_ablation.csv`.
+### Veredicto y Aplicación de la Barrera de Parada (*Stop Rule*)
+Bajo las reglas metodológicas fijadas ex-ante:
+> *Si en Seeds 8, 9 y 10 con lazo cerrado de seguridad activo, `Dispatcher_BALANCED` permanece más lento que `Fixed_ExactScan` y `Dispatcher_APPROXIMATE` no entrega una ventaja sustancial, estadísticamente significativa y reproducible (>15%), la línea de investigación se da por finalizada en Hito 9 sin avanzar a Hito 10.*
 
-Antes de medir, el arnés compara los resultados de qsort y heap para hasta 100 consultas por escenario y valida igualdad bitwise de IDs y distancias para H2 y H3. También imprime Recall@10/100, p50/p95/p99, QPS, evaluaciones de distancia, hit-rate y mantenimiento.
+**Resultado empírico:**
+1. **`Dispatcher_BALANCED` es más lento que `Fixed_ExactScan`:** Promedia **$195.04\,\mu\text{s}$** frente a **$190.00\,\mu\text{s}$** de ExactScan (+2.65% de sobrecosto).
+2. **`Dispatcher_APPROXIMATE` no supera a `Fixed_ExactScan`:** Promedia **$194.68\,\mu\text{s}$** (+2.46% más lento que ExactScan), sin presentar ventaja reproducible.
+3. **Causa raíz:** En 100.000 vectores de 64 dimensiones con selectividades operativas (10% a 25%), un escaneo contiguo vectorizado con AVX2 resuelve las consultas en **$\sim 184\,\mu\text{s}$ (p50)**. El overhead de extracción de características geométricas (~4 $\mu$s), predicción de costos y verificación de deriva en lazo cerrado no se amortiza, dado que HNSW colapsa en regímenes OOD difusos (llegando a $422\,\mu\text{s}$).
 
-### Comparador determinista
+Por consiguiente, **el proyecto concluye que un motor ExactScan AVX2 contiguo es técnica y operativamente superior en este régimen frente a cualquier arquitectura híbrida adaptativa.**
 
-El orden total común es:
-1. Distancia ascendente.
-2. En empate, ID ascendente.
-3. NaN se ordena después de las distancias numéricas; entre NaN, desempate por ID.
+---
 
-Esto reemplaza el comparador anterior que solo miraba distancia. Por lo tanto, los casos de distancias exactamente iguales pueden cambiar respecto de los binarios previos, pero qsort y heaps usan ahora la misma regla.
+## 📊 Síntesis Estadística Multi-Semilla (Seeds 8, 9 y 10)
 
-### Compilación en Windows (zig cc)
+Resultados agregados mediante **Bootstrap Jerárquico Bi-Nivel** ($B = 2.000$ réplicas; Nivel 1: Semillas como clusters primarios; Nivel 2: Consultas por estrato):
 
-Desde la raíz del proyecto:
+| Estrategia | Latencia Media ($\mu$s) | Latencia p50 ($\mu$s) | Latencia p95 ($\mu$s) | Recall@10 (%) | Recall@100 (%) | % a ExactScan | % Fallback | Policy Regret Medio ($\mu$s) |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| **`Fixed_ExactScan`** | **190.00** | **183.81** | **231.70** | **100.00** | **100.00** | **100.0%** | **0.0%** | **0.00** |
+| **`Dispatcher_EXACT`** | 193.11 | 183.73 | 251.88 | 100.00 | 100.00 | 100.0% | 0.0% | 0.00 |
+| **`Dispatcher_BALANCED`** | 195.04 | 186.77 | 251.36 | 100.00 | 100.00 | 94.68% | 75.78% | 20.94 |
+| **`Dispatcher_APPROXIMATE`** | 194.68 | 186.86 | 278.22 | 99.00 | 99.00 | 80.69% | 47.79% | 35.57 |
+| **`Static_Threshold_15pct`**| 177.84 | 168.50 | 249.80 | 97.00 | 93.00 | 42.86% | 0.0% | 18.57 |
+| **`Fixed_hnswlib_ef50`** | 254.29 | 236.98 | 398.62 | 95.00 | 89.00 | 0.0% | 0.0% | 87.20 |
 
-```powershell
-& "$env:LOCALAPPDATA\Microsoft\WinGet\Links\zig.exe" cc -O3 -march=native -mavx2 -mfma -I include `
-  src/main_ablation.c src/heap.c src/hnsw_tiles.c src/distance_avx2.c `
-  src/vector.c src/filter.c src/ground_truth.c src/hnsw.c `
-  src/benchmark.c src/memory.c -o alg_hnsw_ablation.exe -lpsapi
+### Hallazgos Clave de la Arquitectura de Seguridad
+- **Tasa de Falsos Positivos (FPR) = 0.00%:** La sonda geométrica de 64 prototipos evaluó más de 4.500 consultas adversarias $D$ a través de las 3 semillas sin cometer un solo falso positivo ($TN = 100\%$, $FP = 0$).
+- **Cumplimiento Determinista de Calidad:** `Dispatcher_BALANCED` mantuvo el **100.00% de Recall@10 y Recall@100** gracias a la auditoría shadow dual, mientras que `Fixed_hnswlib_ef50` cayó a 89% en Recall@100 y el umbral estático del 15% cayó a 93%.
+- **Protección ante Desastres Geométricos:** En distribuciones con dispersión difusa ($\sigma = 0.25$), donde HNSW colapsó a $422.3\,\mu\text{s}$, el lazo cerrado activó el fallback al 100%, sirviendo el tráfico en $191.5\,\mu\text{s}$ vía ExactScan.
+
+---
+
+## 🗺️ Estructura del Repositorio y Evolución de Hitos
+
+```
+ALG/
+├── include/              # Encabezados base C (HNSW, Heaps, SQ8, filtrado)
+├── src/                  # Motores congelados C (hnsw.c, heap.c, sq8.c, etc.)
+├── hito6/                # Hito 6: Ablación de micro-estructuras y representación
+├── hito7/                # Hito 7: Adaptadores ExactScan, hnswlib, FAISS y topología
+├── hito8/                # Hito 8: Selector Híbrido Adaptativo y Modelo de Costos
+│   ├── include/          # Cost model y hybrid engine API
+│   ├── src/              # Implementación del dispatcher y bindings
+│   └── benchmarks/       # Evaluación multi-semilla (Seeds 6 y 7)
+└── hito9/                # Hito 9: Robustez, OOD, Lazo Cerrado y Cierre Científico
+    ├── include/          # Sonda geométrica, calibrador online, métricas de regret
+    ├── src/              # Implementaciones en C++17
+    ├── datasets/         # Generador sintético factorial OOD (generate_ood.c)
+    ├── benchmarks/       # Runner en lazo cerrado, multi-seed matrix y bootstrap
+    └── results/          # CSVs por consulta, resúmenes y síntesis bootstrap
 ```
 
-Los ejecutables `.exe` y `.pdb` incluidos en el ZIP original son binarios de la versión anterior a esta ablación. Hay que recompilar para generar `alg_hnsw_ablation.exe`.
+### Resumen de Fases
+- **Fase Inicial / Ablación:** Implementación en C puro de estructuras de colas (qsort vs Min/Bounded Max-Heaps) y cuantización escalar UINT8 (SQ8).
+- **Hito 7 (Benchmarking Riguroso):** Comparación estandarizada de ExactScan (AVX2), hnswlib y FAISS bajo 5 semillas fijas e instrumentación de degradación topológica.
+- **Hito 8 (Dispatcher Adaptativo):** Primera arquitectura de selección por consulta basada en modelo de costos de regresión cuadrática y calibración por estratos de selectividad.
+- **Hito 9 (Robustez y Cierre):** Generalización fuera de distribución (*OOD*), sonda geométrica de 64 centroides, detector robusto de anomalías basado en MAD, auditoría shadow dual de calidad, oráculo con intercalado aleatorio en 3 rondas y bootstrap jerárquico.
 
-### Ejecución
+---
 
-```powershell
-.\alg_hnsw_ablation.exe --num-vectors 100000 --num-queries 1000 --selectivity 5 --ef-search 100
-```
+## 🛠️ Instrucciones de Reproducción
 
-`ef-search` debe estar entre 1 y 512 porque los buffers de candidatos/resultados son arrays fijos de 512 elementos. Para Recall@100, el benchmark eleva el valor efectivo a un mínimo de 100.
+### Requisitos
+- Windows 10/11 x64.
+- Compilador Clang/LLVM vía **Zig C/C++ 0.17.0+** (o MinGW GCC con flags `-O3 -mavx2 -mfma -std=c++17`).
+- Python 3.10+ con `pandas` y `numpy`.
 
-## Estructura
+### Compilación y Ejecución de la Matriz Final (Hito 9)
 
-- `include/alg_hnsw.h`: tipos y API del motor.
-- `include/heap.h`: API de colas y selector qsort/heaps.
-- `src/hnsw.c`: motor HNSW y búsquedas H0/H1/H2.
-- `src/hnsw_tiles.c`: búsqueda H3 con Micro-Tiles y Pointer Swizzling.
-- `src/heap.c`: Min-Heap y Bounded Max-Heap sin asignaciones dinámicas.
-- `src/main_ablation.c`: matriz 2x2 y validación exacta.
-- `src/main.c`, `src/main_h3.c`: arneses anteriores.
-- `results/baseline.csv`, `results/h3_ablation.csv`: resultados originales, sin modificación.
+1. **Compilar el generador OOD y el runner:**
+   ```powershell
+   # Generador de distribuciones OOD
+   & "$env:LOCALAPPDATA\Microsoft\WinGet\Links\zig.exe" cc -O3 -mavx2 -mfma hito9/datasets/generate_ood.c -o hito9/datasets/generate_ood.exe
 
-## Criterio de interpretación
+   # Runner en lazo cerrado con afinidad a P-Core 0
+   & "$env:LOCALAPPDATA\Microsoft\WinGet\Links\zig.exe" c++ -O3 -std=c++17 -mavx2 -mfma -I hito9/include -I hito8/include -I hito7/third_party/hnswlib -I hito7/common `
+     hito9/src/geometric_probe.cpp hito9/src/online_calibrator.cpp hito9/src/regret_metrics.cpp `
+     hito8/src/cost_model.cpp hito8/src/hybrid_engine.cpp hito8/src/engine_bindings.cpp `
+     hito9/benchmarks/run_hito9.cpp -o hito9/benchmarks/run_hito9.exe
+   ```
 
-La comparación B contra A cuantifica el efecto de sustituir el ordenamiento de colas en H2. D contra C mide el mismo cambio en H3-128. D contra B aísla el efecto de la representación H3-128 una vez que ambos motores usan heaps. No inferir una mejora general a partir de una única semilla o escenario: usar los cinco seeds y ambos escenarios, y reportar dispersión además de medianas.
+2. **Ejecutar tests unitarios e integración de lazo cerrado:**
+   ```powershell
+   & "$env:LOCALAPPDATA\Microsoft\WinGet\Links\zig.exe" c++ -O3 -std=c++17 -mavx2 -I hito9/include hito9/src/online_calibrator.cpp hito9/tests/test_online_calibrator.cpp -o hito9/tests/test_online_calibrator.exe
+   .\hito9\tests\test_online_calibrator.exe
 
-## Experimento SQ8 (H2-Heap)
+   & "$env:LOCALAPPDATA\Microsoft\WinGet\Links\zig.exe" c++ -O3 -std=c++17 -mavx2 -I hito9/include hito9/src/online_calibrator.cpp hito9/tests/test_closed_loop_integration.cpp -o hito9/tests/test_closed_loop_integration.exe
+   .\hito9\tests\test_closed_loop_integration.exe
+   ```
 
-Se agregó una primera implementación experimental de cuantización escalar UINT8 por dimensión y navegación H2 con distancia AVX2 ponderada, seguida de reranking float32 exacto de todos los candidatos elegibles retenidos en W.
+3. **Ejecutar la batería multi-semilla (Seeds 8, 9 y 10):**
+   ```powershell
+   python hito9/benchmarks/run_multi_seed_matrix.py
+   ```
 
-- Implementación y límites: `README_SQ8.md`
-- API: `include/sq8.h`
-- Cuantizador/kernel: `src/sq8.c`
-- Búsqueda integrada: `hnsw_search_h2_sq8_filteraware` en `src/hnsw.c`
-- Benchmark F32 vs SQ8: `src/main_sq8.c`
-- Test del kernel: `tests/test_sq8_kernel.c`
+4. **Regenerar síntesis y bootstrap jerárquico bi-nivel:**
+   ```powershell
+   python hito9/benchmarks/bootstrap_regret.py
+   python hito9/benchmarks/analyze_ood.py
+   ```
 
-La variante SQ8 mantiene los vectores float32 originales para el reranking. Por tanto, esta primera fase **no reduce la RAM total**; agrega un sidecar de códigos. La calidad y el rendimiento deben medirse en el i5-13500 con el benchmark de 100K y cinco semillas antes de decidir si se conserva.
+---
+
+## 📜 Licencia y Cita
+Código desarrollado con fines de experimentación científica y reproducibilidad abierta. Ver ramas individuales para la trazabilidad completa de commits y auditorías metodológicas.
