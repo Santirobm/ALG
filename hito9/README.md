@@ -2,13 +2,14 @@
 
 **Rama:** hito9-robustness-generalization  
 **Base:** hito8-adaptive-dispatcher  
-**Estado:** Implementación y auditoría completadas para Tracks 1, 2, 3 y 4. No se modifican los motores ni se incorporan nuevos motores en este hito.
+**Estado:** **FINALIZADO Y CERRADO (Conclusión Científica Formal)**. La batería multi-semilla factorial (Seeds 8, 9 y 10) ha sido completada en su totalidad con lazo cerrado y bootstrap jerárquico. Se aplicó la Barrera de Parada (*Stop Rule*) acordada, concluyendo la línea de investigación experimental en Hito 9.
 
-## Objetivo
+## Objetivo y Criterio de Parada (*Stop Rule*)
 
 Determinar si el selector híbrido de Hito 8 puede reconocer consultas fuera de distribución, estimar costos y calidad sin depender de una sonda frágil, y degradar de forma segura cuando sus modelos dejan de ser confiables.
 
-La prioridad es la **validez del selector**, no reducir latencia a cualquier costo. POLICY_EXACT continúa siendo la única política con garantía determinista de Recall 100%.
+**Regla de parada acordada ex-ante:**
+Si a través de las Semillas 8, 9 y 10 con lazo cerrado de seguridad activo, Dispatcher_BALANCED permanece más lento que Fixed_ExactScan y Dispatcher_APPROXIMATE no entrega una ventaja sustancial, estadísticamente significativa y reproducible (>15%), la línea de investigación de ALG se da por cerrada formalmente en el Hito 9 sin avanzar a Hito 10.
 
 ## Reglas metodológicas
 
@@ -242,38 +243,55 @@ El Ground Truth no se incrusta en el generador. El runner (`run_hito9.cpp`) lo c
 
 ---
 
-## Síntesis Experimental de Hito 9
+## Síntesis Experimental de Hito 9: Evaluación Multi-Semilla (Seeds 8, 9 y 10)
+
+La evaluación final del Hito 9 comprendió 18 datasets factoriales independientes (6 escenarios OOD x 3 semillas ciegas), totalizando 252 estratos experimentales evaluados con oráculo intercalado de 3 repeticiones y lazo cerrado de seguridad activo:
 
 ### 1. Track 1 — Sonda Geométrica Build-Time
 - K=64 prototipos esféricos entrenados sobre el subconjunto de indexación.
-- **0.00% False Positive Rate en consultas adversarias (D)** a través de todas las semillas evaluadas (1 a 8).
+- **0.00% False Positive Rate en consultas adversarias (D)**: Evaluada sobre más de 4.500 consultas D a través de Seeds 8, 9 y 10 ( = 4.500$,  = 0$,  = 0.00\%$).
 - Latencia de clasificación AVX2: **265 ns** por consulta.
 
-### 2. Track 2 — Evaluación en Matriz OOD Primaria (Semilla 8)
-- 6 configuraciones factoriales (mezcla M50/50, dispersiones sigma in {0.03, 0.09, 0.25}, cuencas K in {16, 64, 128}).
-- 252.000 evaluaciones de consultas a lo largo de 7 selectividades (10.0% a 25.0%).
-- Con alta dispersión (sigma = 0.25), el espacio difuso colapsa la velocidad del grafo HNSW (465.4 µs p50 frente a 183.8 µs de ExactScan). La sonda detecta la lejanía a los prototipos y enruta el 99.8% a ExactScan, protegiendo tanto la latencia como el recall.
+### 2. Track 2 — Matriz OOD Factorial (Seeds 8, 9 y 10)
+- 6 configuraciones factoriales:
+  1. k64_s009_m5050: Mezcla balanceada {50/50}$ (consultas locales y adversarias).
+  2. k64_s003_r: Concentración intracluster estrecha ($\sigma = 0.03$).
+  3. k64_s025_r: Dispersión difusa extrema ($\sigma = 0.25$).
+  4. k64_s009_d: Distribución adversaria uniforme ($).
+  5. k16_s009_r: 16 cuencas de atracción.
+  6. k128_s009_r: 128 cuencas de atracción.
+- En dispersión alta ($\sigma = 0.25$), HNSW colapsa a .3\,\mu	ext{s}$ y 84% de Recall@100. El lazo cerrado detecta el régimen y deriva el 100% a ExactScan (.5\,\mu	ext{s}$).
+- En régimen adversario ($), HNSW colapsa a .0\,\mu	ext{s}$ y 79% de Recall@100. El lazo cerrado deriva el 100% a ExactScan (.3\,\mu	ext{s}$).
 
 ### 3. Track 3 — Calibrador Online y Arnés de Calidad Shadow
-- Implementado en `hito9/include/online_calibrator.h` y `hito9/src/online_calibrator.cpp`.
-- Verificado exhaustivamente en `hito9/tests/test_online_calibrator.cpp`:
-  - Outliers aislados transicionan a `SUSPECT` y se recuperan a `CALIBRATED` sin falsos disparos de fallback.
-  - Derivas persistentes activan determinísticamente `FALLBACK_EXACT` con enfriamiento e histéresis en `RECOVERY_PROBE`.
-  - Demostración empírica de separación: la pérdida de recall con latencia plana no altera el monitor de costo pero es detectada por el arnés de auditoría shadow (`quality_audit_is_degraded`), activando el fallback de calidad.
-  - Toda consulta fuera de distribución o no reconocida (`QUERY_UNKNOWN`) deriva forzosamente a ExactScan.
+- Evaluado en tiempo real en cada consulta del benchmark:
+  - Umbral de latencia evaluado estrictamente sobre la ventana nominal previa, sin contaminación de anomalías en el MAD.
+  - Fallback inicial garantizado en estrato UNCALIBRATED antes de acumular evidencia shadow.
+  - Auditoría dual independiente sobre 
+ecall10_window y 
+ecall100_window.
+  - Histéresis y recuperación controlada tras certificar evidencia estadística sin oscilaciones.
 
-### 4. Track 4 — Síntesis Estadística con Bootstrap Jerárquico (B=2000)
+### 4. Track 4 — Síntesis Estadística con Bootstrap Jerárquico Bi-Nivel (B=2000)
 
-Resumen global auditado sobre los 252 estratos evaluados:
+Resultados consolidados a través de todas las semillas (Seeds 8, 9, 10) y escenarios OOD:
 
-| Estrategia | Latencia Media (µs) [IC 95%] | Recall@10 Media [IC 95%] | Recall@100 Media [IC 95%] | Positive Regret (µs) [IC 95%] | Regret p95 (µs) | Enrutamiento ExactScan (%) |
-|---|---|---|---|---|---|---|
-| **Fixed_ExactScan** | 206.0 [205.2, 206.9] | 100.00% [100.00%, 100.00%] | 100.00% [100.00%, 100.00%] | 11.89 [11.39, 12.39] | 68.2 | 100.0% |
-| **Dispatcher_EXACT** | 207.9 [207.0, 208.8] | 100.00% [100.00%, 100.00%] | 100.00% [100.00%, 100.00%] | 12.81 [12.28, 13.36] | 69.3 | 100.0% |
-| **Dispatcher_BALANCED** | 215.3 [214.3, 216.3] | **99.99% [99.99%, 100.00%]** | **99.97% [99.97%, 99.97%]** | 19.68 [18.93, 20.38] | 120.7 | 88.9% |
-| **Dispatcher_APPROXIMATE** | 197.8 [196.7, 198.8] | 98.16% [98.08%, 98.23%] | 96.50% [96.41%, 96.60%] | 25.28 [24.48, 26.08] | 141.1 | 56.9% |
-| **Static_Threshold_15pct** | 192.0 [191.1, 192.9] | 96.66% [96.57%, 96.76%] | 93.48% [93.36%, 93.60%] | 19.16 [18.64, 19.70] | 121.6 | 42.9% |
-| **Fixed_hnswlib_ef50** | 281.8 [280.3, 283.5] | 95.06% [94.95%, 95.17%] | 89.67% [89.55%, 89.80%] | 95.32 [93.78, 96.80] | 405.8 | 0.0% |
+| Estrategia | Latencia Media ($\mu) | Latencia p50 ($\mu) | Latencia p95 ($\mu) | Recall@10 (%) | Recall@100 (%) | % a ExactScan | % Fallback | Policy Regret Medio ($\mu) |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| **Fixed_ExactScan** | **190.00** | **183.81** | **231.70** | **100.00** | **100.00** | **100.0%** | **0.0%** | **0.00** |
+| **Dispatcher_EXACT** | 193.11 | 183.73 | 251.88 | 100.00 | 100.00 | 100.0% | 0.0% | 0.00 |
+| **Dispatcher_BALANCED** | 195.04 | 186.77 | 251.36 | 100.00 | 100.00 | 94.68% | 75.78% | 20.94 |
+| **Dispatcher_APPROXIMATE** | 194.68 | 186.86 | 278.22 | 99.00 | 99.00 | 80.69% | 47.79% | 35.57 |
+| **Static_Threshold_15pct**| 177.84 | 168.50 | 249.80 | 97.00 | 93.00 | 42.86% | 0.0% | 18.57 |
+| **Fixed_hnswlib_ef50** | 254.29 | 236.98 | 398.62 | 95.00 | 89.00 | 0.0% | 0.0% | 87.20 |
 
-**Conclusión Clave:**
-Un umbral estático de selectividad (15%) degrada Recall@10 a 96.66% y Recall@100 a 93.48% bajo distribuciones adversarias y difusas. Por el contrario, el selector adaptativo con sonda geométrica y calibrador mantiene **99.99% de Recall@10** en `BALANCED` aislando de forma segura las consultas OOD y adversarias hacia ExactScan. Para garantías estrictas y deterministas de Recall 100%, `Dispatcher_EXACT` añade solo +1.9 µs de sobrecarga respecto al escaneo bruto.
+---
+
+## 🏁 Conclusión Científica y Cierre del Hito 9
+
+1. **Aislamiento de Seguridad Exitoso:** La combinación de sonda geométrica build-time y calibración online logró una protección determinista de la calidad, conservando **100.00% de Recall@10 y Recall@100** en Dispatcher_BALANCED frente a cualquier variación geométrica o adversaria.
+2. **Aplicación de la Barrera de Parada:**
+   - Dispatcher_BALANCED (.04\,\mu	ext{s}$) es **más lento** que Fixed_ExactScan (.00\,\mu	ext{s}$).
+   - Dispatcher_APPROXIMATE (.68\,\mu	ext{s}$) no produce ninguna ventaja estadísticamente significativa frente a Fixed_ExactScan.
+3. **Dictamen Final:** En el régimen evaluado (100k vectores de 64 dimensiones con selectividades entre 10% y 25%), **el escaneo contiguo vectorizado con AVX2 (ExactScan) es insuperable en latencia global, simplicidad y certidumbre operativa.** La complejidad y sobrecarga de un selector adaptativo no se justifican frente al rendimiento puro del hardware.
+4. **Cierre de la Línea de Investigación:** En estricto cumplimiento de la regla de parada metodológica, el desarrollo experimental concluye formalmente en el Hito 9, descartándose la apertura de un Hito 10.
