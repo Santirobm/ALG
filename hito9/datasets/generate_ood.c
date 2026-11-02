@@ -125,6 +125,7 @@ int main(int argc, char **argv) {
         }
     }
 
+    uint32_t local_basin_count = 0, local_uniform_count = 0, adversarial_count = 0;
     uint64_t query_rng = seed ^ 0xFEEDFACECAFEBEEFULL;
     const uint32_t local_count = (mix == OOD_MIX_R) ? nq :
                                 (mix == OOD_MIX_D) ? 0U : (nq / 2U);
@@ -138,8 +139,9 @@ int main(int argc, char **argv) {
 
         /* R distribution: 85% near one of K sampled basin nodes, 15% uniform. */
         int concentrated = is_local && ((rng_next(&query_rng) % 100U) < 85U);
-        if (!is_local) rec->component = OOD_COMPONENT_ADVERSARIAL_UNIFORM;
-        else rec->component = concentrated ? OOD_COMPONENT_LOCAL_BASIN : OOD_COMPONENT_LOCAL_UNIFORM;
+        if (!is_local) { rec->component = OOD_COMPONENT_ADVERSARIAL_UNIFORM; adversarial_count++; }
+        else if (concentrated) { rec->component = OOD_COMPONENT_LOCAL_BASIN; local_basin_count++; }
+        else { rec->component = OOD_COMPONENT_LOCAL_UNIFORM; local_uniform_count++; }
         if (concentrated) {
             uint32_t b = (uint32_t)(rng_next(&query_rng) % k);
             const float *base = vectors + (size_t)basin_nodes[b] * HITO9_OOD_DIM;
@@ -189,9 +191,24 @@ int main(int argc, char **argv) {
         return 1;
     }
 
+    char manifest_path[1024];
+    snprintf(manifest_path, sizeof(manifest_path), "%s.manifest.csv", out_path);
+    FILE *mf = fopen(manifest_path, "w");
+    if (!mf) {
+        fprintf(stderr, "Dataset written, but manifest could not be opened: %s\n", manifest_path);
+        free(centroids); free(vectors); free(categories); free(basin_nodes); free(queries);
+        return 1;
+    }
+    fprintf(mf, "seed,num_vectors,num_queries,dimension,basins,vector_sigma,local_query_sigma,mix,local_fraction_pct,local_basin_fraction_pct,local_basin_queries,local_uniform_queries,adversarial_queries\n");
+    fprintf(mf, "%llu,%u,%u,%u,%u,%.6f,%.6f,%s,%u,85,%u,%u,%u\n",
+            (unsigned long long)seed, nv, nq, HITO9_OOD_DIM, k, sigma, DEFAULT_LOCAL_QUERY_SIGMA,
+            mix == OOD_MIX_R ? "R" : mix == OOD_MIX_D ? "D" : "M50/50",
+            hdr.local_fraction_percent, local_basin_count, local_uniform_count, adversarial_count);
+    fclose(mf);
+
     printf("Hito 9 OOD dataset generated\n");
-    printf("  file: %s\n  seed: %llu\n  vectors: %u x %u\n  queries: %u\n",
-           out_path, (unsigned long long)seed, nv, HITO9_OOD_DIM, nq);
+    printf("  file: %s\n  manifest: %s\n  seed: %llu\n  vectors: %u x %u\n  queries: %u\n",
+           out_path, manifest_path, (unsigned long long)seed, nv, HITO9_OOD_DIM, nq);
     printf("  K: %u | sigma: %.2f | mix: %s\n", k, sigma,
            mix == OOD_MIX_R ? "R" : mix == OOD_MIX_D ? "D" : "M50/50");
     printf("  query labels: local=%u adversarial=%u\n",
