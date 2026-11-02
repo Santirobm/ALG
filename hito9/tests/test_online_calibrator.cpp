@@ -114,26 +114,47 @@ static void test_sudden_latency_spike_to_fallback() {
 }
 
 static void test_gradual_drift_and_recovery_cycle() {
-    std::cout << "[Test 4] Deriva gradual, cooldown e histéresis en RECOVERY_PROBE...\n";
+    std::cout << "[Test 4] Deriva gradual sostenida con parámetros predeterminados (suspect_patience=3)...\n";
     LatencyCalibratorConfig cfg;
     latency_calibrator_default_config(&cfg);
-    cfg.min_samples = 15;
-    cfg.suspect_patience = 2;
+    /* Usar estrictamente configuración predeterminada de producción */
+    cfg.min_samples = 10;
+    cfg.suspect_patience = 3;
+    cfg.tripwire_sigma = 2.0;
     cfg.fallback_cooldown = 5;
     cfg.recovery_probe_count = 3;
-    cfg.tripwire_sigma = 2.0;
+    cfg.conservative_unseen = false;
     LatencyCalibrator *cal = latency_calibrator_create(&cfg);
 
     DriftReason reason = DRIFT_NONE;
-    /* 20 consultas calibradas */
+    /* 20 consultas calibradas nominales */
     for (int i = 0; i < 20; ++i) {
         latency_calibrator_record(cal, QUERY_LOCAL, 1750, ENGINE_HNSWLIB, 150.0, 150.0, &reason);
     }
 
-    /* Deriva gradual en ráfaga */
-    latency_calibrator_record(cal, QUERY_LOCAL, 1750, ENGINE_HNSWLIB, 220.0, 150.0, &reason);
+    /* Comprobar estadísticas de la ventana no contaminada */
+    StratumCalibrator pre_info{};
+    latency_calibrator_get_stratum(cal, QUERY_LOCAL, 1750, ENGINE_HNSWLIB, &pre_info);
+    double initial_sigma = pre_info.stats.robust_sigma;
+
+    /* Inyectar deriva sostenida paso a paso con suspect_patience=3 */
+    /* Muestra anómala 1: residual +20 us */
+    StratumState s1 = latency_calibrator_record(cal, QUERY_LOCAL, 1750, ENGINE_HNSWLIB, 170.0, 150.0, &reason);
+    assert(s1 == STRATUM_STATE_SUSPECT);
     assert(reason == DRIFT_LATENCY_SPIKE);
-    latency_calibrator_record(cal, QUERY_LOCAL, 1750, ENGINE_HNSWLIB, 230.0, 150.0, &reason);
+
+    /* Verificar que la anomalía 1 NO contaminó la ventana previa */
+    StratumCalibrator s1_info{};
+    latency_calibrator_get_stratum(cal, QUERY_LOCAL, 1750, ENGINE_HNSWLIB, &s1_info);
+    assert(s1_info.stats.robust_sigma == initial_sigma);
+
+    /* Muestra anómala 2: residual +25 us */
+    StratumState s2 = latency_calibrator_record(cal, QUERY_LOCAL, 1750, ENGINE_HNSWLIB, 175.0, 150.0, &reason);
+    assert(s2 == STRATUM_STATE_SUSPECT);
+
+    /* Muestra anómala 3: residual +30 us -> Debe disparar FALLBACK_EXACT con suspect_patience=3 */
+    StratumState s3 = latency_calibrator_record(cal, QUERY_LOCAL, 1750, ENGINE_HNSWLIB, 180.0, 150.0, &reason);
+    assert(s3 == STRATUM_STATE_FALLBACK_EXACT);
     assert(reason == DRIFT_LATENCY_PERSISTENT);
     assert(latency_calibrator_should_fallback(cal, QUERY_LOCAL, 1750, ENGINE_HNSWLIB));
 
@@ -157,7 +178,7 @@ static void test_gradual_drift_and_recovery_cycle() {
     assert(!latency_calibrator_should_fallback(cal, QUERY_LOCAL, 1750, ENGINE_HNSWLIB));
 
     latency_calibrator_free(cal);
-    std::cout << "  -> OK: Ciclo completo FALLBACK_EXACT -> RECOVERY_PROBE -> CALIBRATED validado con éxito.\n";
+    std::cout << "  -> OK: Deriva sostenida con suspect_patience=3 evaluada sin contaminar ventana previa; recuperación completada.\n";
 }
 
 static void test_conservative_quality_uncalibrated_and_degraded() {

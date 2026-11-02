@@ -162,6 +162,10 @@ StratumState latency_calibrator_record(LatencyCalibrator *cal,
                 info.state = STRATUM_STATE_CALIBRATED;
                 info.consecutive_anomalies = 0;
                 if (out_reason) *out_reason = RECOVERY_SUCCESS;
+                /* Reincorporar la probe nominal a la ventana */
+                data.residuals.push_back(residual);
+                if (data.residuals.size() > cal->config.window_size) data.residuals.pop_front();
+                update_residual_stats(data.residuals, info.stats);
             } else {
                 info.state = STRATUM_STATE_FALLBACK_EXACT;
                 info.fallback_remaining = cal->config.fallback_cooldown * 2; /* backoff exponencial */
@@ -172,61 +176,74 @@ StratumState latency_calibrator_record(LatencyCalibrator *cal,
         return info.state;
     }
 
-    /* Mantenimiento de ventana deslizante */
-    data.residuals.push_back(residual);
-    if (data.residuals.size() > cal->config.window_size) {
-        data.residuals.pop_front();
-    }
-    update_residual_stats(data.residuals, info.stats);
+    /* ORDEN METODOLÓGICO CORRECTO:
+       1. Si ya se cuenta con muestras suficientes (min_samples), evaluar el nuevo residual
+          contra las estadísticas PREVIAS de la ventana nominal (sin contaminar el umbral).
+    */
+    if (info.stats.sample_count >= cal->config.min_samples) {
+        double tripwire_threshold = info.stats.median + (cal->config.tripwire_sigma * info.stats.robust_sigma);
+        bool is_anomalous = (residual > tripwire_threshold);
 
-    /* Si no hay suficientes muestras, permanecer sin disparar falsas alarmas */
-    if (info.stats.sample_count < cal->config.min_samples) {
-        return info.state;
-    }
-
-    double tripwire_threshold = info.stats.median + (cal->config.tripwire_sigma * info.stats.robust_sigma);
-    bool is_anomalous = (residual > tripwire_threshold);
-
-    switch (info.state) {
-        case STRATUM_STATE_CALIBRATED:
-            if (is_anomalous) {
-                info.state = STRATUM_STATE_SUSPECT;
-                info.consecutive_anomalies = 1;
-                if (out_reason) *out_reason = DRIFT_LATENCY_SPIKE;
-            }
-            break;
-
-        case STRATUM_STATE_SUSPECT:
-            if (is_anomalous) {
-                info.consecutive_anomalies++;
-                if (info.consecutive_anomalies >= cal->config.suspect_patience) {
-                    info.state = STRATUM_STATE_FALLBACK_EXACT;
-                    info.fallback_remaining = cal->config.fallback_cooldown;
-                    info.fallback_events++;
-                    if (out_reason) *out_reason = DRIFT_LATENCY_PERSISTENT;
+        switch (info.state) {
+            case STRATUM_STATE_CALIBRATED:
+                if (is_anomalous) {
+                    info.state = STRATUM_STATE_SUSPECT;
+                    info.consecutive_anomalies = 1;
+                    if (out_reason) *out_reason = DRIFT_LATENCY_SPIKE;
+                    /* No incorporamos la anomalía a la ventana nominal para no inflar robust_sigma */
+                } else {
+                    /* Observación nominal: incorporar a la ventana */
+                    data.residuals.push_back(residual);
+                    if (data.residuals.size() > cal->config.window_size) data.residuals.pop_front();
+                    update_residual_stats(data.residuals, info.stats);
                 }
-            } else {
-                /* Outlier aislado disipado: retorno seguro a CALIBRATED */
-                info.state = STRATUM_STATE_CALIBRATED;
-                info.consecutive_anomalies = 0;
-                info.false_alarms++;
-                if (out_reason) *out_reason = RECOVERY_SUCCESS;
-            }
-            break;
+                break;
 
-        case STRATUM_STATE_FALLBACK_EXACT:
-            if (info.fallback_remaining > 0) {
-                info.fallback_remaining--;
-            }
-            if (info.fallback_remaining == 0) {
-                info.state = STRATUM_STATE_RECOVERY_PROBE;
-                info.recovery_probes_done = 0;
-                info.recovery_probes_passed = 0;
-            }
-            break;
+            case STRATUM_STATE_SUSPECT:
+                if (is_anomalous) {
+                    info.consecutive_anomalies++;
+                    if (info.consecutive_anomalies >= cal->config.suspect_patience) {
+                        info.state = STRATUM_STATE_FALLBACK_EXACT;
+                        info.fallback_remaining = cal->config.fallback_cooldown;
+                        info.fallback_events++;
+                        if (out_reason) *out_reason = DRIFT_LATENCY_PERSISTENT;
+                    }
+                    /* No incorporar a la ventana mientras esté sospechada */
+                } else {
+                    /* Outlier aislado disipado: retorno seguro a CALIBRATED e incorporar muestra nominal */
+                    info.state = STRATUM_STATE_CALIBRATED;
+                    info.consecutive_anomalies = 0;
+                    info.false_alarms++;
+                    if (out_reason) *out_reason = RECOVERY_SUCCESS;
 
-        default:
-            break;
+                    data.residuals.push_back(residual);
+                    if (data.residuals.size() > cal->config.window_size) data.residuals.pop_front();
+                    update_residual_stats(data.residuals, info.stats);
+                }
+                break;
+
+            case STRATUM_STATE_FALLBACK_EXACT:
+                if (info.fallback_remaining > 0) {
+                    info.fallback_remaining--;
+                }
+                if (info.fallback_remaining == 0) {
+                    info.state = STRATUM_STATE_RECOVERY_PROBE;
+                    info.recovery_probes_done = 0;
+                    info.recovery_probes_passed = 0;
+                }
+                break;
+
+            default:
+                break;
+        }
+    } else {
+        /* Durante la fase de inicialización (muestras < min_samples):
+           acumular observaciones en la ventana sin disparar transiciones de alarma */
+        data.residuals.push_back(residual);
+        if (data.residuals.size() > cal->config.window_size) {
+            data.residuals.pop_front();
+        }
+        update_residual_stats(data.residuals, info.stats);
     }
 
     return info.state;

@@ -9,10 +9,13 @@
 /*
  * Test de Integración de Lazo Cerrado (Closed-Loop Safety):
  * Valida determinísticamente:
- * 1. Fallback y recuperación ante derivas de latencia.
- * 2. Fallback y recuperación ante degradación real de calidad (Recall@10 y Recall@100)
+ * 1. Fallback inicial estricto: mientras el estado sea UNCALIBRATED (sin evidencia),
+ *    las consultas se sirven por ExactScan y HNSW se ejecuta en shadow.
+ * 2. Transición a producción: tras acumular evidencia (HEALTHY), HNSW se habilita.
+ * 3. Fallback y recuperación ante derivas de latencia con parámetros de producción.
+ * 4. Fallback y recuperación ante degradación real de calidad (Recall@10 y Recall@100)
  *    con latencia plana e invariable.
- * 3. Prohibición de rehabilitar HNSW antes de acumular evidencia suficiente en shadow.
+ * 5. Prohibición de rehabilitar HNSW antes de acumular evidencia suficiente en shadow.
  */
 
 struct MockEngineSystem {
@@ -47,28 +50,38 @@ static void test_latency_drift_closed_loop() {
     uint32_t sel_bp = 1500;
 
     uint32_t exact_dispatched = 0, hnsw_dispatched = 0;
+    uint32_t initial_uncalibrated_exact = 0;
 
-    /* Fase 1: Calibración nominal */
-    for (uint32_t q = 0; q < 15; q++) {
+    /* Fase 1: Desde la consulta 0, el auditor evalúa el estado.
+       Primeras 5 consultas: UNCALIBRATED -> ExactScan sirve, shadow entrena.
+       Siguientes 15 consultas: HEALTHY -> HNSW en producción. */
+    for (uint32_t q = 0; q < 20; q++) {
         bool lat_fb = latency_calibrator_should_fallback(lat_cal, regime, sel_bp, ENGINE_HNSWLIB);
         double l10 = 0.0, l100 = 0.0;
-        bool qual_fb = (q >= 5) && quality_audit_should_fallback(qual_audit, regime, sel_bp, &l10, &l100);
+        bool qual_fb = quality_audit_should_fallback(qual_audit, regime, sel_bp, &l10, &l100);
 
         HybridEngineId chosen = (lat_fb || qual_fb) ? ENGINE_EXACT_SCAN : ENGINE_HNSWLIB;
-        if (chosen == ENGINE_EXACT_SCAN) exact_dispatched++;
-        else hnsw_dispatched++;
+        if (chosen == ENGINE_EXACT_SCAN) {
+            exact_dispatched++;
+            if (q < 5) initial_uncalibrated_exact++;
+            /* Shadow execution para acumular evidencia */
+            quality_audit_record(qual_audit, regime, sel_bp, sys.hnsw_recall10, sys.hnsw_recall100, 10.0);
+        } else {
+            hnsw_dispatched++;
+            quality_audit_record(qual_audit, regime, sel_bp, sys.hnsw_recall10, sys.hnsw_recall100, 10.0);
+        }
 
         DriftReason reason = DRIFT_NONE;
         latency_calibrator_record(lat_cal, regime, sel_bp, ENGINE_HNSWLIB, sys.hnsw_latency_us, 80.0, &reason);
-        quality_audit_record(qual_audit, regime, sel_bp, sys.hnsw_recall10, sys.hnsw_recall100, 10.0);
     }
-    assert(hnsw_dispatched >= 10);
-    std::cout << "  [1.1] Regimen nominal: HNSW despachado normalmente (" << hnsw_dispatched << " consultas).\n";
+    assert(initial_uncalibrated_exact == 5);
+    assert(hnsw_dispatched == 15);
+    std::cout << "  [1.1] Fallback inicial por UNCALIBRATED (5 consultas a ExactScan) -> HNSW en produccion tras certificar HEALTHY (15 consultas).\n";
 
     /* Fase 2: Salto abrupto de latencia a 350 us */
     sys.hnsw_latency_us = 350.0;
     uint32_t pre_exact = exact_dispatched;
-    for (uint32_t q = 15; q < 30; q++) {
+    for (uint32_t q = 20; q < 35; q++) {
         bool lat_fb = latency_calibrator_should_fallback(lat_cal, regime, sel_bp, ENGINE_HNSWLIB);
         HybridEngineId chosen = lat_fb ? ENGINE_EXACT_SCAN : ENGINE_HNSWLIB;
 
@@ -128,29 +141,40 @@ static void test_quality_drift_closed_loop() {
     uint32_t sel_bp = 1500;
 
     uint32_t exact_dispatched = 0, hnsw_dispatched = 0;
+    uint32_t initial_uncalibrated_exact = 0;
 
-    /* Fase 1: Calidad nominal certificada */
-    for (uint32_t q = 0; q < 15; q++) {
+    /* Fase 1: Calidad inicial UNCALIBRATED -> ExactScan desde la consulta 0 */
+    for (uint32_t q = 0; q < 20; q++) {
         double l10 = 0.0, l100 = 0.0;
-        bool qual_fb = (q >= 5) && quality_audit_should_fallback(qual_audit, regime, sel_bp, &l10, &l100);
-        HybridEngineId chosen = qual_fb ? ENGINE_EXACT_SCAN : ENGINE_HNSWLIB;
+        /* Consulta incondicional del auditor de calidad desde q=0 */
+        bool qual_fb = quality_audit_should_fallback(qual_audit, regime, sel_bp, &l10, &l100);
+        bool lat_fb  = latency_calibrator_should_fallback(lat_cal, regime, sel_bp, ENGINE_HNSWLIB);
 
-        if (chosen == ENGINE_EXACT_SCAN) exact_dispatched++;
-        else hnsw_dispatched++;
+        HybridEngineId chosen = (qual_fb || lat_fb) ? ENGINE_EXACT_SCAN : ENGINE_HNSWLIB;
+
+        if (chosen == ENGINE_EXACT_SCAN) {
+            exact_dispatched++;
+            if (q < 5) initial_uncalibrated_exact++;
+            /* Shadow audit evalúa HNSW sin riesgo para la consulta */
+            quality_audit_record(qual_audit, regime, sel_bp, sys.hnsw_recall10, sys.hnsw_recall100, 5.0);
+        } else {
+            hnsw_dispatched++;
+            quality_audit_record(qual_audit, regime, sel_bp, sys.hnsw_recall10, sys.hnsw_recall100, 5.0);
+        }
 
         DriftReason r = DRIFT_NONE;
         latency_calibrator_record(lat_cal, regime, sel_bp, ENGINE_HNSWLIB, sys.hnsw_latency_us, 80.0, &r);
-        quality_audit_record(qual_audit, regime, sel_bp, sys.hnsw_recall10, sys.hnsw_recall100, 5.0);
     }
-    assert(hnsw_dispatched >= 10);
-    std::cout << "  [2.1] Fase Nominal: R@10=98%, R@100=95% -> HNSW despachado en produccion.\n";
+    assert(initial_uncalibrated_exact == 5);
+    assert(hnsw_dispatched == 15);
+    std::cout << "  [2.1] Fase Inicial: ExactScan sirve las 5 primeras consultas (UNCALIBRATED). Tras 5 muestras shadow, HNSW entra a produccion (15 consultas).\n";
 
     /* Fase 2: Latencia sigue PERFECTAMENTE RAPIDA (80 us), pero Recall cae (R@10=0.82 < 0.95, R@100=0.74 < 0.90) */
     sys.hnsw_recall10 = 0.82;
     sys.hnsw_recall100 = 0.74;
 
     uint32_t exact_in_quality_fallback = 0;
-    for (uint32_t q = 15; q < 35; q++) {
+    for (uint32_t q = 20; q < 40; q++) {
         double l10 = 0.0, l100 = 0.0;
         bool qual_fb = quality_audit_should_fallback(qual_audit, regime, sel_bp, &l10, &l100);
         bool lat_fb  = latency_calibrator_should_fallback(lat_cal, regime, sel_bp, ENGINE_HNSWLIB);
