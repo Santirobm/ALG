@@ -237,6 +237,6 @@ Parámetros permitidos:
 - `--mix`: R, D o M50/50.
 - `--seed`, `--num-vectors`, `--num-queries`, `--out`.
 
-El Ground Truth no se incrusta en el generador. El runner deberá calcularlo exactamente a partir de los vectores y categorías guardados, para evitar mezclar generación de datos con evaluación del motor. El formato incluye la grilla de selectividades de Hito 8.
+El Ground Truth no se incrusta en el generador. El runner deberá calcularlo exactamente a partir de los vectores y categorías guardados, para evitar mezclar generación de datos con evaluación del motor. El formato incluye la grilla de selectividades de Hito 8. La carpeta `hito9/datasets/manifests/` se versiona para recibir los binarios y sus manifiestos generados; los artefactos de gran tamaño no deben subirse al repositorio salvo que se acuerde expresamente.
 
 **Limitación actual:** esta entrega implementa generación reproducible de corpus y consultas etiquetadas; todavía no implementa el lector/runner ni el cálculo de Ground Truth y no se presenta como benchmark OOD ejecutado.
