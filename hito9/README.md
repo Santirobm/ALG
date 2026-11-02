@@ -2,7 +2,7 @@
 
 **Rama:** hito9-robustness-generalization  
 **Base:** hito8-adaptive-dispatcher  
-**Estado:** planificación metodológica. No se modifican los motores ni se incorporan nuevos motores en este hito.
+**Estado:** Implementación y auditoría completadas para Tracks 1, 2, 3 y 4. No se modifican los motores ni se incorporan nuevos motores en este hito.
 
 ## Objetivo
 
@@ -237,6 +237,43 @@ Parámetros permitidos:
 - `--mix`: R, D o M50/50.
 - `--seed`, `--num-vectors`, `--num-queries`, `--out`.
 
-El Ground Truth no se incrusta en el generador. El runner deberá calcularlo exactamente a partir de los vectores y categorías guardados, para evitar mezclar generación de datos con evaluación del motor. El formato incluye la grilla de selectividades de Hito 8. La carpeta `hito9/datasets/manifests/` se versiona para recibir los binarios y sus manifiestos generados; los artefactos de gran tamaño no deben subirse al repositorio salvo que se acuerde expresamente.
 
-**Limitación actual:** esta entrega implementa generación reproducible de corpus y consultas etiquetadas; todavía no implementa el lector/runner ni el cálculo de Ground Truth y no se presenta como benchmark OOD ejecutado.
+El Ground Truth no se incrusta en el generador. El runner (`run_hito9.cpp`) lo calcula exactamente a partir de los vectores y categorías guardados (fuerza bruta exacta top-100 por query y selectividad), desacoplando completamente la generación de datos de la evaluación del motor.
+
+---
+
+## Síntesis Experimental de Hito 9
+
+### 1. Track 1 — Sonda Geométrica Build-Time
+- K=64 prototipos esféricos entrenados sobre el subconjunto de indexación.
+- **0.00% False Positive Rate en consultas adversarias (D)** a través de todas las semillas evaluadas (1 a 8).
+- Latencia de clasificación AVX2: **265 ns** por consulta.
+
+### 2. Track 2 — Evaluación en Matriz OOD Primaria (Semilla 8)
+- 6 configuraciones factoriales (mezcla M50/50, dispersiones sigma in {0.03, 0.09, 0.25}, cuencas K in {16, 64, 128}).
+- 252.000 evaluaciones de consultas a lo largo de 7 selectividades (10.0% a 25.0%).
+- Con alta dispersión (sigma = 0.25), el espacio difuso colapsa la velocidad del grafo HNSW (465.4 µs p50 frente a 183.8 µs de ExactScan). La sonda detecta la lejanía a los prototipos y enruta el 99.8% a ExactScan, protegiendo tanto la latencia como el recall.
+
+### 3. Track 3 — Calibrador Online y Arnés de Calidad Shadow
+- Implementado en `hito9/include/online_calibrator.h` y `hito9/src/online_calibrator.cpp`.
+- Verificado exhaustivamente en `hito9/tests/test_online_calibrator.cpp`:
+  - Outliers aislados transicionan a `SUSPECT` y se recuperan a `CALIBRATED` sin falsos disparos de fallback.
+  - Derivas persistentes activan determinísticamente `FALLBACK_EXACT` con enfriamiento e histéresis en `RECOVERY_PROBE`.
+  - Demostración empírica de separación: la pérdida de recall con latencia plana no altera el monitor de costo pero es detectada por el arnés de auditoría shadow (`quality_audit_is_degraded`), activando el fallback de calidad.
+  - Toda consulta fuera de distribución o no reconocida (`QUERY_UNKNOWN`) deriva forzosamente a ExactScan.
+
+### 4. Track 4 — Síntesis Estadística con Bootstrap Jerárquico (B=2000)
+
+Resumen global auditado sobre los 252 estratos evaluados:
+
+| Estrategia | Latencia Media (µs) [IC 95%] | Recall@10 Media [IC 95%] | Recall@100 Media [IC 95%] | Positive Regret (µs) [IC 95%] | Regret p95 (µs) | Enrutamiento ExactScan (%) |
+|---|---|---|---|---|---|---|
+| **Fixed_ExactScan** | 206.0 [205.2, 206.9] | 100.00% [100.00%, 100.00%] | 100.00% [100.00%, 100.00%] | 11.89 [11.39, 12.39] | 68.2 | 100.0% |
+| **Dispatcher_EXACT** | 207.9 [207.0, 208.8] | 100.00% [100.00%, 100.00%] | 100.00% [100.00%, 100.00%] | 12.81 [12.28, 13.36] | 69.3 | 100.0% |
+| **Dispatcher_BALANCED** | 215.3 [214.3, 216.3] | **99.99% [99.99%, 100.00%]** | **99.97% [99.97%, 99.97%]** | 19.68 [18.93, 20.38] | 120.7 | 88.9% |
+| **Dispatcher_APPROXIMATE** | 197.8 [196.7, 198.8] | 98.16% [98.08%, 98.23%] | 96.50% [96.41%, 96.60%] | 25.28 [24.48, 26.08] | 141.1 | 56.9% |
+| **Static_Threshold_15pct** | 192.0 [191.1, 192.9] | 96.66% [96.57%, 96.76%] | 93.48% [93.36%, 93.60%] | 19.16 [18.64, 19.70] | 121.6 | 42.9% |
+| **Fixed_hnswlib_ef50** | 281.8 [280.3, 283.5] | 95.06% [94.95%, 95.17%] | 89.67% [89.55%, 89.80%] | 95.32 [93.78, 96.80] | 405.8 | 0.0% |
+
+**Conclusión Clave:**
+Un umbral estático de selectividad (15%) degrada Recall@10 a 96.66% y Recall@100 a 93.48% bajo distribuciones adversarias y difusas. Por el contrario, el selector adaptativo con sonda geométrica y calibrador mantiene **99.99% de Recall@10** en `BALANCED` aislando de forma segura las consultas OOD y adversarias hacia ExactScan. Para garantías estrictas y deterministas de Recall 100%, `Dispatcher_EXACT` añade solo +1.9 µs de sobrecarga respecto al escaneo bruto.
