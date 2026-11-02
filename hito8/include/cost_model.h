@@ -43,6 +43,7 @@ typedef struct {
 } EngineEstimate;
 
 void cost_model_default_exact(ExactCostModel *model);
+void cost_model_default_hnsw(HnswCostModel *model);
 double cost_model_exact_predict(const ExactCostModel *model, uint32_t eligible_count);
 EngineEstimate cost_model_hnsw_predict(const HnswCostModel *model,
                                        QueryRegime regime,
