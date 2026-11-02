@@ -216,11 +216,11 @@ El generador inicial se encuentra en:
 
 El generador escribe un formato binario propio versionado (`AOD9`), no el formato Hito 7/8. Esto evita que un lector antiguo interprete silenciosamente consultas mixtas como si fueran dos bloques homogéneos R/D.
 
-Cada registro de consulta lleva una etiqueta explícita:
-- `OOD_QUERY_LOCAL`
-- `OOD_QUERY_ADVERSARIAL`
+Cada registro de consulta lleva una etiqueta explícita de clase y componente:
+- Clase: `OOD_QUERY_LOCAL` o `OOD_QUERY_ADVERSARIAL`.
+- Componente: `OOD_COMPONENT_LOCAL_BASIN`, `OOD_COMPONENT_LOCAL_UNIFORM` o `OOD_COMPONENT_ADVERSARIAL_UNIFORM`.
 
-En `M50/50`, el archivo contiene ambas clases en una mezcla 50/50 (la consulta conserva su etiqueta). La distribución R mantiene 85% de consultas concentradas alrededor de nodos de cuenca y 15% uniformes, como en el generador Hito 8.
+En `M50/50`, el archivo contiene ambas clases en una mezcla 50/50 y conserva la etiqueta de cada consulta. La distribución R mantiene 85% de consultas concentradas alrededor de representantes de cuencas distintas y 15% uniformes. El generador escribe además un CSV lateral con la semilla, parámetros y conteos reales por componente.
 
 ### Compilación y uso
 
