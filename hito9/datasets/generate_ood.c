@@ -154,6 +154,14 @@ int main(int argc, char **argv) {
         normalize(rec->values);
     }
 
+    /* Deterministic Fisher-Yates shuffle prevents block-order/cache bias in M50/50. */
+    for (uint32_t i = nq - 1U; i > 0U; --i) {
+        uint32_t j = (uint32_t)(rng_next(&query_rng) % (uint64_t)(i + 1U));
+        Hito9OODQueryRecord tmp = queries[i];
+        queries[i] = queries[j];
+        queries[j] = tmp;
+    }
+
     Hito9OODHeader hdr;
     memset(&hdr, 0, sizeof(hdr));
     hdr.magic = HITO9_OOD_MAGIC;
