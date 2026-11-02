@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <numeric>
 #include <cstdlib>
+#include <cstring>
 
 /* Clave para identificar el estrato */
 typedef std::tuple<uint32_t, uint32_t, uint32_t> StratumKey;
@@ -39,6 +40,7 @@ void latency_calibrator_default_config(LatencyCalibratorConfig *cfg) {
     cfg->fallback_cooldown = 20;
     cfg->recovery_probe_count = 5;
     cfg->recovery_tolerance_sigma = 1.5;
+    cfg->conservative_unseen = true; /* Principio de precaución: desconocidos van a ExactScan */
 }
 
 LatencyCalibrator* latency_calibrator_create(const LatencyCalibratorConfig *config) {
@@ -162,7 +164,7 @@ StratumState latency_calibrator_record(LatencyCalibrator *cal,
                 if (out_reason) *out_reason = RECOVERY_SUCCESS;
             } else {
                 info.state = STRATUM_STATE_FALLBACK_EXACT;
-                info.fallback_remaining = cal->config.fallback_cooldown * 2; /* backoff */
+                info.fallback_remaining = cal->config.fallback_cooldown * 2; /* backoff exponencial */
                 info.fallback_events++;
                 if (out_reason) *out_reason = RECOVERY_FAILED;
             }
@@ -177,7 +179,7 @@ StratumState latency_calibrator_record(LatencyCalibrator *cal,
     }
     update_residual_stats(data.residuals, info.stats);
 
-    /* Si no hay suficientes muestras, permanecer en CALIBRATED sin disparar falsas alarmas */
+    /* Si no hay suficientes muestras, permanecer sin disparar falsas alarmas */
     if (info.stats.sample_count < cal->config.min_samples) {
         return info.state;
     }
@@ -213,7 +215,6 @@ StratumState latency_calibrator_record(LatencyCalibrator *cal,
             break;
 
         case STRATUM_STATE_FALLBACK_EXACT:
-            /* Si llegó aquí una observación directa en fallback, decrementar cooldown */
             if (info.fallback_remaining > 0) {
                 info.fallback_remaining--;
             }
@@ -255,20 +256,36 @@ void latency_calibrator_notify_fallback_served(LatencyCalibrator *cal,
     }
 }
 
+bool latency_calibrator_is_calibrated(const LatencyCalibrator *cal,
+                                      QueryRegime regime,
+                                      uint32_t selectivity_bp,
+                                      HybridEngineId engine) {
+    if (!cal) return false;
+    StratumKey key = make_key(regime, selectivity_bp, engine);
+    auto it = cal->strata.find(key);
+    if (it == cal->strata.end()) return false;
+    return (it->second.info.stats.sample_count >= cal->config.min_samples);
+}
+
 bool latency_calibrator_should_fallback(const LatencyCalibrator *cal,
                                         QueryRegime regime,
                                         uint32_t selectivity_bp,
                                         HybridEngineId engine) {
-    if (!cal) return false;
+    if (!cal) return true;
     /* Consultas fuera de distribución o desconocidas van forzosamente a ExactScan */
     if (regime == QUERY_UNKNOWN) return true;
 
     StratumKey key = make_key(regime, selectivity_bp, engine);
     auto it = cal->strata.find(key);
     if (it == cal->strata.end()) {
-        /* Estrato nunca visto: conservadoramente no se fuerza fallback a menos que sea UNKNOWN */
-        return false;
+        /* Estrato nunca antes visto: bajo modo conservador, exige fallback */
+        return cal->config.conservative_unseen;
     }
+
+    if (cal->config.conservative_unseen && it->second.info.stats.sample_count < cal->config.min_samples) {
+        return true;
+    }
+
     return (it->second.info.state == STRATUM_STATE_FALLBACK_EXACT);
 }
 
@@ -335,7 +352,6 @@ bool quality_audit_should_sample(QualityAuditHarness *audit, uint64_t query_inde
     if (!audit || audit->config.audit_rate <= 0.0) return false;
     audit->metrics.total_queries++;
 
-    /* Muestreo determinista mediante intervalo de paso (stride) */
     uint64_t stride = (uint64_t)std::floor(1.0 / audit->config.audit_rate);
     if (stride == 0) stride = 1;
     return (query_index % stride) == 0;
@@ -360,23 +376,29 @@ void quality_audit_record(QualityAuditHarness *audit,
     }
 }
 
-bool quality_audit_is_degraded(const QualityAuditHarness *audit,
-                               QueryRegime regime,
-                               uint32_t selectivity_bp,
-                               double *out_empirical_lcb) {
-    if (!audit) return false;
+QualityStratumState quality_audit_get_state(const QualityAuditHarness *audit,
+                                            QueryRegime regime,
+                                            uint32_t selectivity_bp,
+                                            double *out_empirical_lcb) {
+    if (!audit) {
+        if (out_empirical_lcb) *out_empirical_lcb = 0.0;
+        return QUALITY_STATE_UNCALIBRATED;
+    }
+
     QualityStratumKey key = make_quality_key(regime, selectivity_bp);
     auto it = audit->strata.find(key);
     if (it == audit->strata.end()) {
-        if (out_empirical_lcb) *out_empirical_lcb = 1.0;
-        return false;
+        /* Estrato no visto: NO asignar LCB 1.0 artificial. Es UNCALIBRATED (0.0) */
+        if (out_empirical_lcb) *out_empirical_lcb = 0.0;
+        return QUALITY_STATE_UNCALIBRATED;
     }
 
     const auto &w = it->second.recall_window;
     size_t n = w.size();
     if (n < audit->config.min_audit_samples) {
-        if (out_empirical_lcb) *out_empirical_lcb = 1.0;
-        return false;
+        /* Muestras insuficientes para certificar confianza: UNCALIBRATED */
+        if (out_empirical_lcb) *out_empirical_lcb = 0.0;
+        return QUALITY_STATE_UNCALIBRATED;
     }
 
     double sum = 0.0;
@@ -400,10 +422,37 @@ bool quality_audit_is_degraded(const QualityAuditHarness *audit,
     if (out_empirical_lcb) *out_empirical_lcb = lcb;
 
     if (lcb < audit->config.target_recall) {
-        const_cast<QualityAuditHarness*>(audit)->metrics.quality_fallback_triggers++;
+        return QUALITY_STATE_DEGRADED;
+    }
+    return QUALITY_STATE_HEALTHY;
+}
+
+bool quality_audit_should_fallback(const QualityAuditHarness *audit,
+                                   QueryRegime regime,
+                                   uint32_t selectivity_bp,
+                                   double *out_empirical_lcb) {
+    QualityStratumState state = quality_audit_get_state(audit, regime, selectivity_bp, out_empirical_lcb);
+    if (state == QUALITY_STATE_UNCALIBRATED || state == QUALITY_STATE_DEGRADED) {
+        if (audit) {
+            const_cast<QualityAuditHarness*>(audit)->metrics.quality_fallback_triggers++;
+        }
         return true;
     }
     return false;
+}
+
+bool quality_audit_is_calibrated(const QualityAuditHarness *audit,
+                                 QueryRegime regime,
+                                 uint32_t selectivity_bp) {
+    double lcb = 0.0;
+    return (quality_audit_get_state(audit, regime, selectivity_bp, &lcb) != QUALITY_STATE_UNCALIBRATED);
+}
+
+bool quality_audit_is_degraded(const QualityAuditHarness *audit,
+                               QueryRegime regime,
+                               uint32_t selectivity_bp,
+                               double *out_empirical_lcb) {
+    return (quality_audit_get_state(audit, regime, selectivity_bp, out_empirical_lcb) == QUALITY_STATE_DEGRADED);
 }
 
 void quality_audit_get_metrics(const QualityAuditHarness *audit, QualityAuditMetrics *out_metrics) {

@@ -10,7 +10,7 @@
 extern "C" {
 #endif
 
-/* Estados del autómata de calibración por estrato */
+/* Estados del autómata de calibración de latencia por estrato */
 typedef enum {
     STRATUM_STATE_CALIBRATED = 0,    /* Nominal: estimaciones confiables, baja dispersión de residuales */
     STRATUM_STATE_SUSPECT = 1,       /* Sospechoso: residual anómalo detectado (> tripwire sigma) */
@@ -37,6 +37,7 @@ typedef struct {
     uint32_t fallback_cooldown;      /* Consultas en FALLBACK_EXACT antes de pasar a RECOVERY_PROBE (default: 20) */
     uint32_t recovery_probe_count;   /* Muestras de prueba requeridas para validar recuperación (default: 5) */
     double recovery_tolerance_sigma; /* Tolerancia durante recuperación (default: 1.5) */
+    bool conservative_unseen;        /* Si es true, estratos desconocidos o sin min_samples van a ExactScan (default: true) */
 } LatencyCalibratorConfig;
 
 /* Estadísticas calculadas sobre la ventana */
@@ -77,11 +78,7 @@ void latency_calibrator_free(LatencyCalibrator *cal);
 void latency_calibrator_reset(LatencyCalibrator *cal);
 void latency_calibrator_default_config(LatencyCalibratorConfig *config);
 
-/* Registrar una observación de latencia:
-   - actual_latency_us: latencia real observada
-   - estimated_cost_us: latencia predicha por el modelo de costo
-   Retorna el estado del estrato luego de procesar la muestra.
-*/
+/* Registrar una observación de latencia */
 StratumState latency_calibrator_record(LatencyCalibrator *cal,
                                        QueryRegime regime,
                                        uint32_t selectivity_bp,
@@ -96,11 +93,18 @@ void latency_calibrator_notify_fallback_served(LatencyCalibrator *cal,
                                                uint32_t selectivity_bp,
                                                HybridEngineId engine);
 
-/* Consultar si para un estrato dado se debe forzar fallback seguro a ExactScan */
+/* Consultar si para un estrato dado se debe forzar fallback seguro a ExactScan.
+   Bajo conservative_unseen=true, estratos desconocidos o sin min_samples retornan true */
 bool latency_calibrator_should_fallback(const LatencyCalibrator *cal,
                                         QueryRegime regime,
                                         uint32_t selectivity_bp,
                                         HybridEngineId engine);
+
+/* Consulta si el estrato tiene suficientes muestras de latencia */
+bool latency_calibrator_is_calibrated(const LatencyCalibrator *cal,
+                                      QueryRegime regime,
+                                      uint32_t selectivity_bp,
+                                      HybridEngineId engine);
 
 /* Obtener estadísticas y estado de un estrato */
 bool latency_calibrator_get_stratum(const LatencyCalibrator *cal,
@@ -109,7 +113,16 @@ bool latency_calibrator_get_stratum(const LatencyCalibrator *cal,
                                     HybridEngineId engine,
                                     StratumCalibrator *out_stratum);
 
-/* --- Módulo B: Auditoría de Calidad (Recall Audit Harness) --- */
+/* ========================================================================= */
+/* --- Módulo B: Auditoría de Calidad (Recall Audit Harness) ---             */
+/* ========================================================================= */
+
+/* Estados de calidad auditada por estrato */
+typedef enum {
+    QUALITY_STATE_UNCALIBRATED = 0, /* Insuficientes muestras (< min_audit_samples) o estrato no visto; falta evidencia */
+    QUALITY_STATE_HEALTHY = 1,      /* Calibrado: LCB >= target_recall con significancia estadística */
+    QUALITY_STATE_DEGRADED = 2      /* Degradado: LCB < target_recall; activa fallback seguro */
+} QualityStratumState;
 
 typedef struct {
     double target_recall;            /* Umbral de calidad requerido (ej: 0.95) */
@@ -136,7 +149,26 @@ void quality_audit_record(QualityAuditHarness *audit,
                           double observed_recall,
                           double shadow_overhead_us);
 
-/* Consulta si la calidad en un estrato ha degradado por debajo de target_recall */
+/* Obtiene el estado explícito de calidad y el límite inferior de confianza (LCB).
+   Si es UNCALIBRATED, out_empirical_lcb recibe 0.0 (nunca 1.0 artificial). */
+QualityStratumState quality_audit_get_state(const QualityAuditHarness *audit,
+                                            QueryRegime regime,
+                                            uint32_t selectivity_bp,
+                                            double *out_empirical_lcb);
+
+/* Determina si se debe forzar fallback seguro a ExactScan por falta de evidencia o degradación.
+   Retorna TRUE si el estado es UNCALIBRATED o DEGRADED */
+bool quality_audit_should_fallback(const QualityAuditHarness *audit,
+                                   QueryRegime regime,
+                                   uint32_t selectivity_bp,
+                                   double *out_empirical_lcb);
+
+/* Consulta si un estrato cuenta con evidencia suficiente para ser considerado calibrado */
+bool quality_audit_is_calibrated(const QualityAuditHarness *audit,
+                                 QueryRegime regime,
+                                 uint32_t selectivity_bp);
+
+/* Consulta de compatibilidad hacia atrás: true solo si explícitamente DEGRADED */
 bool quality_audit_is_degraded(const QualityAuditHarness *audit,
                                QueryRegime regime,
                                uint32_t selectivity_bp,

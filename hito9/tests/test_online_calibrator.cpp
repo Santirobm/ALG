@@ -1,4 +1,5 @@
 #include "../include/online_calibrator.h"
+#include "../include/regret_metrics.h"
 #include <iostream>
 #include <cassert>
 #include <vector>
@@ -11,6 +12,7 @@ static void test_insufficient_samples_and_reset() {
     LatencyCalibratorConfig cfg;
     latency_calibrator_default_config(&cfg);
     cfg.min_samples = 10;
+    cfg.conservative_unseen = false; /* Solo para test 1 de ventana */
     LatencyCalibrator *cal = latency_calibrator_create(&cfg);
 
     DriftReason reason = DRIFT_NONE;
@@ -21,7 +23,7 @@ static void test_insufficient_samples_and_reset() {
         assert(reason == DRIFT_NONE);
     }
 
-    /* Muestra anómala antes de alcanzar min_samples: NO debe disparar SUSPECT */
+    /* Muestra anómala antes de alcanzar min_samples: NO debe disparar SUSPECT prematuro */
     StratumState s = latency_calibrator_record(cal, QUERY_LOCAL, 1500, ENGINE_HNSWLIB, 500.0, 100.0, &reason);
     assert(s == STRATUM_STATE_CALIBRATED);
     assert(reason == DRIFT_NONE);
@@ -158,61 +160,107 @@ static void test_gradual_drift_and_recovery_cycle() {
     std::cout << "  -> OK: Ciclo completo FALLBACK_EXACT -> RECOVERY_PROBE -> CALIBRATED validado con éxito.\n";
 }
 
-static void test_quality_drift_with_flat_latency() {
-    std::cout << "[Test 5] Deriva de Calidad (Recall) con latencia plana e invariable...\n";
+static void test_conservative_quality_uncalibrated_and_degraded() {
+    std::cout << "[Test 5] Calidad conservadora: estado UNCALIBRATED ante falta de evidencia...\n";
     QualityAuditConfig qcfg;
     quality_audit_default_config(&qcfg);
     qcfg.target_recall = 0.95;
     qcfg.min_audit_samples = 10;
-    qcfg.confidence_z = 1.645;
-    qcfg.audit_rate = 1.0; /* 100% en test para control exacto */
-
-    LatencyCalibratorConfig lcfg;
-    latency_calibrator_default_config(&lcfg);
-    LatencyCalibrator *lcal = latency_calibrator_create(&lcfg);
     QualityAuditHarness *qaudit = quality_audit_create(&qcfg);
 
-    DriftReason reason = DRIFT_NONE;
-    /* Latencia perfectamente constante a 100 us */
-    /* Pero recall cae de 0.98 a 0.85 (muy por debajo de 0.95) */
-    for (int i = 0; i < 20; ++i) {
-        StratumState ls = latency_calibrator_record(lcal, QUERY_LOCAL, 2000, ENGINE_HNSWLIB, 100.0, 100.0, &reason);
-        assert(ls == STRATUM_STATE_CALIBRATED); /* La latencia NO detecta el fallo */
+    double lcb = -1.0;
+    /* Caso A: Estrato nunca visto */
+    QualityStratumState s0 = quality_audit_get_state(qaudit, QUERY_LOCAL, 1500, &lcb);
+    assert(s0 == QUALITY_STATE_UNCALIBRATED);
+    assert(lcb == 0.0); /* NUNCA 1.0 artificial */
+    assert(quality_audit_should_fallback(qaudit, QUERY_LOCAL, 1500, &lcb) == true);
+    assert(quality_audit_is_calibrated(qaudit, QUERY_LOCAL, 1500) == false);
 
-        /* El recall cae */
-        double recall = (i < 10) ? 0.98 : 0.82;
-        quality_audit_record(qaudit, QUERY_LOCAL, 2000, recall, 15.0);
+    /* Caso B: Muestras insuficientes (5 de 10) */
+    for (int i = 0; i < 5; ++i) {
+        quality_audit_record(qaudit, QUERY_LOCAL, 1500, 1.0, 10.0);
     }
+    QualityStratumState s1 = quality_audit_get_state(qaudit, QUERY_LOCAL, 1500, &lcb);
+    assert(s1 == QUALITY_STATE_UNCALIBRATED);
+    assert(lcb == 0.0);
+    assert(quality_audit_should_fallback(qaudit, QUERY_LOCAL, 1500, &lcb) == true);
 
-    /* Comprobación de la tesis fundamental del Track 3:
-       El monitor de latencia NO vio desvío, pero el arnés de auditoría de calidad sí */
-    assert(!latency_calibrator_should_fallback(lcal, QUERY_LOCAL, 2000, ENGINE_HNSWLIB));
+    /* Caso C: Se completan 10 muestras de calidad excelente (recall 1.0) -> transiciona a HEALTHY */
+    for (int i = 0; i < 5; ++i) {
+        quality_audit_record(qaudit, QUERY_LOCAL, 1500, 1.0, 10.0);
+    }
+    QualityStratumState s2 = quality_audit_get_state(qaudit, QUERY_LOCAL, 1500, &lcb);
+    assert(s2 == QUALITY_STATE_HEALTHY);
+    assert(lcb >= 0.95);
+    assert(quality_audit_should_fallback(qaudit, QUERY_LOCAL, 1500, &lcb) == false);
+    assert(quality_audit_is_calibrated(qaudit, QUERY_LOCAL, 1500) == true);
 
-    double lcb = 0.0;
-    bool quality_degraded = quality_audit_is_degraded(qaudit, QUERY_LOCAL, 2000, &lcb);
-    assert(quality_degraded);
+    /* Caso D: Degradación real (recall cae a 0.80) -> transiciona a DEGRADED */
+    for (int i = 0; i < 15; ++i) {
+        quality_audit_record(qaudit, QUERY_LOCAL, 1500, 0.80, 10.0);
+    }
+    QualityStratumState s3 = quality_audit_get_state(qaudit, QUERY_LOCAL, 1500, &lcb);
+    assert(s3 == QUALITY_STATE_DEGRADED);
     assert(lcb < 0.95);
+    assert(quality_audit_should_fallback(qaudit, QUERY_LOCAL, 1500, &lcb) == true);
 
-    QualityAuditMetrics m;
-    quality_audit_get_metrics(qaudit, &m);
-    assert(m.audited_queries == 20);
-    assert(m.quality_fallback_triggers > 0);
-    assert(m.total_shadow_overhead_us > 0.0);
-
-    latency_calibrator_free(lcal);
     quality_audit_free(qaudit);
-    std::cout << "  -> OK: Se demuestra que la degradación de calidad es detectada por QualityAudit (LCB="
-              << std::fixed << std::setprecision(3) << lcb << " < 0.95) mientras el monitor de latencia permanece nominal.\n";
+    std::cout << "  -> OK: Estratos sin muestras o con evidencia insuficiente retornan UNCALIBRATED (LCB=0.0) y fuerzan fallback.\n";
 }
 
-static void test_ood_safety_default() {
-    std::cout << "[Test 6] Enrutamiento conservador para régimen desconocido (QUERY_UNKNOWN)...\n";
-    LatencyCalibrator *cal = latency_calibrator_create(nullptr);
-    /* Cualquier consulta QUERY_UNKNOWN debe forzar fallback seguro a ExactScan */
+static void test_conservative_unseen_latency_stratum() {
+    std::cout << "[Test 6] Latencia conservadora: estratos desconocidos o sin datos...\n";
+    LatencyCalibratorConfig cfg;
+    latency_calibrator_default_config(&cfg);
+    cfg.conservative_unseen = true;
+    LatencyCalibrator *cal = latency_calibrator_create(&cfg);
+
+    /* Estrato nunca visto: debe forzar fallback seguro a ExactScan */
+    assert(latency_calibrator_should_fallback(cal, QUERY_LOCAL, 1250, ENGINE_HNSWLIB) == true);
+    assert(latency_calibrator_is_calibrated(cal, QUERY_LOCAL, 1250, ENGINE_HNSWLIB) == false);
+
+    /* Régimen UNKNOWN: siempre deriva forzosamente a ExactScan */
     assert(latency_calibrator_should_fallback(cal, QUERY_UNKNOWN, 1500, ENGINE_HNSWLIB) == true);
-    assert(latency_calibrator_should_fallback(cal, QUERY_UNKNOWN, 2500, ENGINE_ALG_H2_AT) == true);
+
     latency_calibrator_free(cal);
-    std::cout << "  -> OK: QUERY_UNKNOWN siempre deriva determinísticamente a ExactScan.\n";
+    std::cout << "  -> OK: Modo conservador enruta estratos no calibrados a ExactScan hasta acumular perfil.\n";
+}
+
+static void test_policy_vs_diagnostic_regret() {
+    std::cout << "[Test 7] Evaluación de Regret: Separación entre Política y Diagnóstico...\n";
+    double exact_lat = 100.0;
+    double hnsw_lat = 50.0;
+
+    /* Escenario 1: POLICY_EXACT con ExactScan ejecutado */
+    /* Ruido de medición: actual_lat = 104.0 us (levemente superior a exact_lat de referencia) */
+    RegretEvaluation r1 = evaluate_regret(POLICY_EXACT, 104.0, exact_lat, hnsw_lat, false, ENGINE_EXACT_SCAN);
+    /* Por definición: ExactScan frente a POLICY_EXACT tiene regret CERO */
+    assert(r1.policy_signed_regret_us == 0.0);
+    assert(r1.policy_positive_regret_us == 0.0);
+    /* El oráculo admisible es exactamente ExactScan */
+    assert(r1.admissible_oracle_latency_us == exact_lat);
+    /* Diagnóstico no restringido registra la diferencia contra el motor más rápido (HNSW a 50 us) */
+    assert(r1.diagnostic_signed_regret_us == 54.0);
+    assert(r1.diagnostic_positive_regret_us == 54.0);
+
+    /* Escenario 2: POLICY_BALANCED con HNSW no admisible (calidad no certificada) */
+    RegretEvaluation r2 = evaluate_regret(POLICY_BALANCED, exact_lat, exact_lat, hnsw_lat, false, ENGINE_EXACT_SCAN);
+    assert(r2.admissible_oracle_latency_us == exact_lat);
+    assert(r2.policy_positive_regret_us == 0.0);
+
+    /* Escenario 3: POLICY_BALANCED con HNSW admisible (calidad certificada LCB >= 0.95) */
+    RegretEvaluation r3 = evaluate_regret(POLICY_BALANCED, exact_lat, exact_lat, hnsw_lat, true, ENGINE_EXACT_SCAN);
+    assert(r3.admissible_oracle_latency_us == hnsw_lat);
+    assert(r3.policy_signed_regret_us == exact_lat - hnsw_lat);
+    assert(r3.policy_positive_regret_us == 50.0);
+
+    /* Escenario 4: POLICY_APPROXIMATE (mínimo de latencia puro) */
+    RegretEvaluation r4 = evaluate_regret(POLICY_APPROXIMATE, hnsw_lat, exact_lat, hnsw_lat, true, ENGINE_HNSWLIB);
+    assert(r4.admissible_oracle_latency_us == hnsw_lat);
+    assert(r4.policy_signed_regret_us == 0.0);
+    assert(r4.policy_positive_regret_us == 0.0);
+
+    std::cout << "  -> OK: ExactScan en POLICY_EXACT tiene regret cero por definición; oráculos admisibles y diagnósticos separados.\n";
 }
 
 int main() {
@@ -221,18 +269,19 @@ int main() {
     SetProcessAffinityMask(GetCurrentProcess(), 1ULL);
 
     std::cout << "========================================================================\n";
-    std::cout << "Hito 9: Track 3 — Test de Calibración Online, Fallback y Calidad Shadow\n";
+    std::cout << "Hito 9: Auditoría Metodológica — Test de Calibración, Calidad y Regret\n";
     std::cout << "========================================================================\n";
 
     test_insufficient_samples_and_reset();
     test_isolated_outlier_no_false_alarm();
     test_sudden_latency_spike_to_fallback();
     test_gradual_drift_and_recovery_cycle();
-    test_quality_drift_with_flat_latency();
-    test_ood_safety_default();
+    test_conservative_quality_uncalibrated_and_degraded();
+    test_conservative_unseen_latency_stratum();
+    test_policy_vs_diagnostic_regret();
 
     std::cout << "========================================================================\n";
-    std::cout << "Todos los tests de Track 3 (Calibrador Online & Auditoría de Calidad) PASARON.\n";
+    std::cout << "Todos los tests de Auditoría Metodológica PASARON con éxito (7/7).\n";
     std::cout << "========================================================================\n";
     return 0;
 }
