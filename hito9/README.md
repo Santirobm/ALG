@@ -202,3 +202,41 @@ Esta estructura es una propuesta; los nombres y APIs definitivos se fijarán al 
 - Prometer Recall determinista en BALANCED.
 - Presentar una alarma de latencia como detector de pérdida de calidad.
 - Ajustar modelos o umbrales mirando los resultados finales de test.
+
+
+## Track 2 — Implementación inicial del generador OOD
+
+El generador inicial se encuentra en:
+
+- `hito9/datasets/ood_dataset_format.h`
+- `hito9/datasets/generate_ood.c`
+- `hito9/config/experiment_matrix.json`
+
+### Formato y etiquetas
+
+El generador escribe un formato binario propio versionado (`AOD9`), no el formato Hito 7/8. Esto evita que un lector antiguo interprete silenciosamente consultas mixtas como si fueran dos bloques homogéneos R/D.
+
+Cada registro de consulta lleva una etiqueta explícita:
+- `OOD_QUERY_LOCAL`
+- `OOD_QUERY_ADVERSARIAL`
+
+En `M50/50`, el archivo contiene ambas clases en una mezcla 50/50 (la consulta conserva su etiqueta). La distribución R mantiene 85% de consultas concentradas alrededor de nodos de cuenca y 15% uniformes, como en el generador Hito 8.
+
+### Compilación y uso
+
+Compilar como C11 con la biblioteca matemática. Ejemplo:
+
+```sh
+gcc -O3 -std=c11 hito9/datasets/generate_ood.c -lm -o generate_ood
+./generate_ood --seed 8001 --basins 64 --sigma 0.25 --mix M50/50 --out hito9/datasets/manifests/ood_s8001_k64_s025_mixed.bin
+```
+
+Parámetros permitidos:
+- `--basins`: 16, 64 o 128.
+- `--sigma`: 0.03, 0.09 o 0.25.
+- `--mix`: R, D o M50/50.
+- `--seed`, `--num-vectors`, `--num-queries`, `--out`.
+
+El Ground Truth no se incrusta en el generador. El runner deberá calcularlo exactamente a partir de los vectores y categorías guardados, para evitar mezclar generación de datos con evaluación del motor. El formato incluye la grilla de selectividades de Hito 8.
+
+**Limitación actual:** esta entrega implementa generación reproducible de corpus y consultas etiquetadas; todavía no implementa el lector/runner ni el cálculo de Ground Truth y no se presenta como benchmark OOD ejecutado.
