@@ -1,0 +1,2 @@
+seed,num_vectors,num_queries,dimension,basins,vector_sigma,local_query_sigma,mix,local_fraction_pct,local_basin_fraction_pct,local_basin_queries,local_uniform_queries,adversarial_queries
+10,100000,1000,64,64,0.250000,0.050000,R,100,85,846,154,0

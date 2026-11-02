@@ -26,18 +26,22 @@ def main():
         strat_grp = sub.groupby('Strategy').mean(numeric_only=True).reset_index()
         print(f"{'Estrategia':<24} | {'p50 (us)':<10} | {'p95 (us)':<10} | {'R@10 (%)':<10} | {'R@100 (%)':<10} | {'% Exact':<8} | {'% HNSW':<8} | {'+Regret Med':<12} | {'+Regret p95':<12}")
         print("-" * 120)
+        reg_col = 'PolicyRegretMean' if 'PolicyRegretMean' in strat_grp.columns else 'PositiveRegretMean'
+        reg_p95_col = 'PolicyRegret_p95' if 'PolicyRegret_p95' in strat_grp.columns else 'PositiveRegret_p95'
         for _, r in strat_grp.sort_values(by='p50_us').iterrows():
-            print(f"{r['Strategy']:<24} | {r['p50_us']:<10.1f} | {r['p95_us']:<10.1f} | {r['Recall10']:<10.2f} | {r['Recall100']:<10.2f} | {r['PctExact']:<8.1f} | {r['PctHnsw']:<8.1f} | {r['PositiveRegretMean']:<12.2f} | {r['PositiveRegret_p95']:<12.2f}")
+            print(f"{r['Strategy']:<24} | {r['p50_us']:<10.1f} | {r['p95_us']:<10.1f} | {r['Recall10']:<10.2f} | {r['Recall100']:<10.2f} | {r['PctExact']:<8.1f} | {r['PctHnsw']:<8.1f} | {r.get(reg_col, 0.0):<12.2f} | {r.get(reg_p95_col, 0.0):<12.2f}")
 
     # Tabla comparativa general de Robustez
     print(f"\n========================================================================")
     print("SINTESIS GLOBAL DE ROBUSTEZ: PROMEDIO EN TODOS LOS ESCENARIOS OOD")
     print("========================================================================")
     global_strat = df.groupby('Strategy').mean(numeric_only=True).reset_index()
+    reg_col_g = 'PolicyRegretMean' if 'PolicyRegretMean' in global_strat.columns else 'PositiveRegretMean'
+    reg_p95_col_g = 'PolicyRegret_p95' if 'PolicyRegret_p95' in global_strat.columns else 'PositiveRegret_p95'
     print(f"{'Estrategia':<24} | {'Latencia Med':<14} | {'R@10 (%)':<10} | {'R@100 (%)':<10} | {'% Exact':<8} | {'% HNSW':<8} | {'+Regret Med (us)':<18} | {'+Regret p95 (us)':<18}")
     print("-" * 120)
-    for _, r in global_strat.sort_values(by='PositiveRegretMean').iterrows():
-        print(f"{r['Strategy']:<24} | {r['MeanLatency_us']:<14.1f} | {r['Recall10']:<10.2f} | {r['Recall100']:<10.2f} | {r['PctExact']:<8.1f} | {r['PctHnsw']:<8.1f} | {r['PositiveRegretMean']:<18.2f} | {r['PositiveRegret_p95']:<18.2f}")
+    for _, r in global_strat.sort_values(by=reg_col_g).iterrows():
+        print(f"{r['Strategy']:<24} | {r['MeanLatency_us']:<14.1f} | {r['Recall10']:<10.2f} | {r['Recall100']:<10.2f} | {r['PctExact']:<8.1f} | {r['PctHnsw']:<8.1f} | {r.get(reg_col_g, 0.0):<18.2f} | {r.get(reg_p95_col_g, 0.0):<18.2f}")
 
     out_csv = "hito9/results/ood_primary_matrix_synthesis.csv"
     df.to_csv(out_csv, index=False)
