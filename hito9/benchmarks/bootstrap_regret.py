@@ -4,16 +4,30 @@ Hito 9: Track 4 — Hierarchical Bootstrap Regret & Statistical Uncertainty Anal
 Two-level hierarchical cluster bootstrap:
   - Level 1: Resample seeds (primary sampling units) with replacement.
   - Level 2: Resample queries with replacement within each selected seed cluster.
-Separates policy-conditioned regret from unconstrained diagnostic regret.
+Grouped by Scenario (independent of seed), Selectivity, and Strategy.
 """
 
 import os
 import glob
+import re
 import numpy as np
 import pandas as pd
 
 BOOTSTRAP_ROUNDS = 2000
 BOOTSTRAP_SEED = 4242
+
+def extract_scenario(dataset_name):
+    """
+    Strips dataset prefix and seed identifier to produce a canonical scenario name.
+    Example: 'ood_seed8_k64_s009_m5050.bin' -> 'k64_s009_m5050'
+             'ood_seed9_k64_s009_m5050.bin_per_query.csv' -> 'k64_s009_m5050'
+    """
+    base = os.path.basename(str(dataset_name))
+    base = base.replace('_per_query.csv', '').replace('.bin', '')
+    # Remove prefix ood_ and seed\d+_
+    cleaned = re.sub(r'^ood_', '', base)
+    cleaned = re.sub(r'seed\d+_?', '', cleaned)
+    return cleaned
 
 def hierarchical_bootstrap_ci(data_df, value_col, cluster_col='Seed', n_rounds=BOOTSTRAP_ROUNDS, seed=BOOTSTRAP_SEED):
     """
@@ -73,29 +87,33 @@ def analyze_all_results():
         dfs.append(df)
     
     full_df = pd.concat(dfs, ignore_index=True)
+    full_df['Scenario'] = full_df['Dataset'].apply(extract_scenario)
     print(f"Total query evaluations loaded: {len(full_df):,}")
 
     unique_seeds = full_df['Seed'].unique() if 'Seed' in full_df.columns else []
-    print(f"Primary cluster units (Seeds) detected: {list(unique_seeds)} (Count = {len(unique_seeds)})")
-    if len(unique_seeds) == 1:
+    print(f"Primary cluster units (Seeds) detected: {list(unique_seeds)} (Total count = {len(unique_seeds)})")
+    if len(unique_seeds) <= 1:
         print("  [AVISO METODOLOGICO] Datos con semilla unica: el remuestreo mide variabilidad condicionada a dicha semilla.")
     else:
-        print("  [METODOLOGIA] Remuestreo jerarquico activo en 2 niveles (Nivel 1: Semillas, Nivel 2: Consultas).")
+        print(f"  [METODOLOGIA] Remuestreo jerarquico activo en 2 niveles sobre {len(unique_seeds)} semillas independientes.")
 
     # Column resolution for backward/forward compatibility
     pol_reg_col = 'PolicyPositiveRegret_us' if 'PolicyPositiveRegret_us' in full_df.columns else 'PositiveRegret_us'
     diag_reg_col = 'DiagnosticPositiveRegret_us' if 'DiagnosticPositiveRegret_us' in full_df.columns else 'PositiveRegret_us'
 
     records = []
-    groups = full_df.groupby(['Dataset', 'Selectivity', 'Strategy'], sort=True)
+    # Agrupación correcta: Por Escenario canónico (sin semilla), Selectividad y Estrategia
+    groups = full_df.groupby(['Scenario', 'Selectivity', 'Strategy'], sort=True)
     total_groups = len(groups)
-    print(f"Computing hierarchical bootstrap over {total_groups} strata (B={BOOTSTRAP_ROUNDS}, seed={BOOTSTRAP_SEED})...")
+    print(f"Computing hierarchical bootstrap over {total_groups} strata agrupados por Escenario x Selectividad x Estrategia (B={BOOTSTRAP_ROUNDS}, seed={BOOTSTRAP_SEED})...")
 
     group_idx = 0
-    for (dataset, sel, strat), group in groups:
+    for (scenario, sel, strat), group in groups:
         group_idx += 1
         if group_idx % 25 == 0 or group_idx == total_groups:
             print(f"  Processing stratum {group_idx}/{total_groups}...")
+
+        stratum_seeds = sorted(list(group['Seed'].unique()))
 
         # Policy Positive Regret
         pr_mean, pr_ci_low, pr_ci_high = hierarchical_bootstrap_ci(group, pol_reg_col, cluster_col='Seed')
@@ -124,7 +142,9 @@ def analyze_all_results():
         exact_pct = float((group['ChosenEngine'] == 'EXACT').mean() * 100.0)
 
         records.append({
-            'Dataset': dataset,
+            'Scenario': scenario,
+            'Seed_Count': len(stratum_seeds),
+            'Seeds': ",".join(map(str, stratum_seeds)),
             'Selectivity_pct': sel,
             'Strategy': strat,
             'Query_Count': len(group),
@@ -156,9 +176,9 @@ def analyze_all_results():
     summary_df.to_csv(out_csv, index=False)
     print(f"\nSaved statistical bootstrap synthesis to: {out_csv}")
 
-    print("\n" + "="*105)
+    print("\n" + "="*110)
     print("RESUMEN GLOBAL AUDITADO POR ESTRATEGIA (CON INTERVALOS BOOTSTRAP 95%)")
-    print("="*105)
+    print("="*110)
     agg_records = []
     for strat, strat_group in full_df.groupby('Strategy'):
         lat_mean, lat_l, lat_h = hierarchical_bootstrap_ci(strat_group, 'Latency_us', cluster_col='Seed')
@@ -182,7 +202,7 @@ def analyze_all_results():
     
     agg_df = pd.DataFrame(agg_records)
     print(agg_df.to_string(index=False))
-    print("="*105)
+    print("="*110)
 
 if __name__ == '__main__':
     analyze_all_results()

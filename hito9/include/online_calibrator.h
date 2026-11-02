@@ -114,18 +114,19 @@ bool latency_calibrator_get_stratum(const LatencyCalibrator *cal,
                                     StratumCalibrator *out_stratum);
 
 /* ========================================================================= */
-/* --- Módulo B: Auditoría de Calidad (Recall Audit Harness) ---             */
+/* --- Módulo B: Auditoría de Calidad Dual (Recall@10 y Recall@100) ---      */
 /* ========================================================================= */
 
 /* Estados de calidad auditada por estrato */
 typedef enum {
     QUALITY_STATE_UNCALIBRATED = 0, /* Insuficientes muestras (< min_audit_samples) o estrato no visto; falta evidencia */
-    QUALITY_STATE_HEALTHY = 1,      /* Calibrado: LCB >= target_recall con significancia estadística */
-    QUALITY_STATE_DEGRADED = 2      /* Degradado: LCB < target_recall; activa fallback seguro */
+    QUALITY_STATE_HEALTHY = 1,      /* Calibrado: LCB10 >= target_recall10 Y LCB100 >= target_recall100 con significancia estadística */
+    QUALITY_STATE_DEGRADED = 2      /* Degradado: LCB10 < target_recall10 O LCB100 < target_recall100; activa fallback seguro */
 } QualityStratumState;
 
 typedef struct {
-    double target_recall;            /* Umbral de calidad requerido (ej: 0.95) */
+    double target_recall10;          /* Umbral de calidad requerido para Recall@10 (default: 0.95) */
+    double target_recall100;         /* Umbral de calidad requerido para Recall@100 (default: 0.90) */
     double audit_rate;               /* Fracción de consultas auditadas en shadow (ej: 0.05 = 5%) */
     size_t audit_window_size;        /* Tamaño de ventana para auditar recall (default: 50) */
     size_t min_audit_samples;        /* Mínimo de auditorías para evaluación (default: 10) */
@@ -142,37 +143,41 @@ void quality_audit_default_config(QualityAuditConfig *config);
 /* Determina determinísticamente si una consulta debe ser auditada en shadow mode */
 bool quality_audit_should_sample(QualityAuditHarness *audit, uint64_t query_index);
 
-/* Registra el resultado auditado: recall medido contra Ground Truth o ExactScan */
+/* Registra el resultado auditado: recall10 y recall100 medidos contra Ground Truth */
 void quality_audit_record(QualityAuditHarness *audit,
                           QueryRegime regime,
                           uint32_t selectivity_bp,
-                          double observed_recall,
+                          double observed_recall10,
+                          double observed_recall100,
                           double shadow_overhead_us);
 
-/* Obtiene el estado explícito de calidad y el límite inferior de confianza (LCB).
-   Si es UNCALIBRATED, out_empirical_lcb recibe 0.0 (nunca 1.0 artificial). */
+/* Obtiene el estado explícito de calidad y los límites inferiores de confianza (LCB10 y LCB100).
+   Si es UNCALIBRATED, los LCB reciben 0.0 (nunca 1.0 artificial). */
 QualityStratumState quality_audit_get_state(const QualityAuditHarness *audit,
                                             QueryRegime regime,
                                             uint32_t selectivity_bp,
-                                            double *out_empirical_lcb);
+                                            double *out_lcb10,
+                                            double *out_lcb100);
 
-/* Determina si se debe forzar fallback seguro a ExactScan por falta de evidencia o degradación.
+/* Determina si se debe forzar fallback seguro a ExactScan por falta de evidencia o degradación en R@10 o R@100.
    Retorna TRUE si el estado es UNCALIBRATED o DEGRADED */
 bool quality_audit_should_fallback(const QualityAuditHarness *audit,
                                    QueryRegime regime,
                                    uint32_t selectivity_bp,
-                                   double *out_empirical_lcb);
+                                   double *out_lcb10,
+                                   double *out_lcb100);
 
-/* Consulta si un estrato cuenta con evidencia suficiente para ser considerado calibrado */
+/* Consulta si un estrato cuenta con evidencia suficiente para ser considerado calibrado en ambas métricas */
 bool quality_audit_is_calibrated(const QualityAuditHarness *audit,
                                  QueryRegime regime,
                                  uint32_t selectivity_bp);
 
-/* Consulta de compatibilidad hacia atrás: true solo si explícitamente DEGRADED */
+/* Consulta de compatibilidad hacia atrás */
 bool quality_audit_is_degraded(const QualityAuditHarness *audit,
                                QueryRegime regime,
                                uint32_t selectivity_bp,
-                               double *out_empirical_lcb);
+                               double *out_lcb10,
+                               double *out_lcb100);
 
 /* Métricas globales de la auditoría */
 typedef struct {

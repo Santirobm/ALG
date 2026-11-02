@@ -161,51 +161,53 @@ static void test_gradual_drift_and_recovery_cycle() {
 }
 
 static void test_conservative_quality_uncalibrated_and_degraded() {
-    std::cout << "[Test 5] Calidad conservadora: estado UNCALIBRATED ante falta de evidencia...\n";
+    std::cout << "[Test 5] Calidad conservadora dual (Recall@10 y Recall@100 independizados)...\n";
     QualityAuditConfig qcfg;
     quality_audit_default_config(&qcfg);
-    qcfg.target_recall = 0.95;
+    qcfg.target_recall10 = 0.95;
+    qcfg.target_recall100 = 0.90;
     qcfg.min_audit_samples = 10;
     QualityAuditHarness *qaudit = quality_audit_create(&qcfg);
 
-    double lcb = -1.0;
+    double lcb10 = -1.0, lcb100 = -1.0;
     /* Caso A: Estrato nunca visto */
-    QualityStratumState s0 = quality_audit_get_state(qaudit, QUERY_LOCAL, 1500, &lcb);
+    QualityStratumState s0 = quality_audit_get_state(qaudit, QUERY_LOCAL, 1500, &lcb10, &lcb100);
     assert(s0 == QUALITY_STATE_UNCALIBRATED);
-    assert(lcb == 0.0); /* NUNCA 1.0 artificial */
-    assert(quality_audit_should_fallback(qaudit, QUERY_LOCAL, 1500, &lcb) == true);
+    assert(lcb10 == 0.0 && lcb100 == 0.0); /* NUNCA 1.0 artificial */
+    assert(quality_audit_should_fallback(qaudit, QUERY_LOCAL, 1500, &lcb10, &lcb100) == true);
     assert(quality_audit_is_calibrated(qaudit, QUERY_LOCAL, 1500) == false);
 
     /* Caso B: Muestras insuficientes (5 de 10) */
     for (int i = 0; i < 5; ++i) {
-        quality_audit_record(qaudit, QUERY_LOCAL, 1500, 1.0, 10.0);
+        quality_audit_record(qaudit, QUERY_LOCAL, 1500, 1.0, 1.0, 10.0);
     }
-    QualityStratumState s1 = quality_audit_get_state(qaudit, QUERY_LOCAL, 1500, &lcb);
+    QualityStratumState s1 = quality_audit_get_state(qaudit, QUERY_LOCAL, 1500, &lcb10, &lcb100);
     assert(s1 == QUALITY_STATE_UNCALIBRATED);
-    assert(lcb == 0.0);
-    assert(quality_audit_should_fallback(qaudit, QUERY_LOCAL, 1500, &lcb) == true);
+    assert(lcb10 == 0.0 && lcb100 == 0.0);
+    assert(quality_audit_should_fallback(qaudit, QUERY_LOCAL, 1500, &lcb10, &lcb100) == true);
 
-    /* Caso C: Se completan 10 muestras de calidad excelente (recall 1.0) -> transiciona a HEALTHY */
+    /* Caso C: Se completan 10 muestras de calidad excelente (R@10=1.0, R@100=1.0) -> HEALTHY */
     for (int i = 0; i < 5; ++i) {
-        quality_audit_record(qaudit, QUERY_LOCAL, 1500, 1.0, 10.0);
+        quality_audit_record(qaudit, QUERY_LOCAL, 1500, 1.0, 1.0, 10.0);
     }
-    QualityStratumState s2 = quality_audit_get_state(qaudit, QUERY_LOCAL, 1500, &lcb);
+    QualityStratumState s2 = quality_audit_get_state(qaudit, QUERY_LOCAL, 1500, &lcb10, &lcb100);
     assert(s2 == QUALITY_STATE_HEALTHY);
-    assert(lcb >= 0.95);
-    assert(quality_audit_should_fallback(qaudit, QUERY_LOCAL, 1500, &lcb) == false);
+    assert(lcb10 >= 0.95 && lcb100 >= 0.90);
+    assert(quality_audit_should_fallback(qaudit, QUERY_LOCAL, 1500, &lcb10, &lcb100) == false);
     assert(quality_audit_is_calibrated(qaudit, QUERY_LOCAL, 1500) == true);
 
-    /* Caso D: Degradación real (recall cae a 0.80) -> transiciona a DEGRADED */
+    /* Caso D: R@10 cumple (0.98 >= 0.95), pero R@100 degrada (0.80 < 0.90) -> DEGRADED */
     for (int i = 0; i < 15; ++i) {
-        quality_audit_record(qaudit, QUERY_LOCAL, 1500, 0.80, 10.0);
+        quality_audit_record(qaudit, QUERY_LOCAL, 1500, 0.98, 0.80, 10.0);
     }
-    QualityStratumState s3 = quality_audit_get_state(qaudit, QUERY_LOCAL, 1500, &lcb);
+    QualityStratumState s3 = quality_audit_get_state(qaudit, QUERY_LOCAL, 1500, &lcb10, &lcb100);
     assert(s3 == QUALITY_STATE_DEGRADED);
-    assert(lcb < 0.95);
-    assert(quality_audit_should_fallback(qaudit, QUERY_LOCAL, 1500, &lcb) == true);
+    assert(lcb10 >= 0.95);
+    assert(lcb100 < 0.90);
+    assert(quality_audit_should_fallback(qaudit, QUERY_LOCAL, 1500, &lcb10, &lcb100) == true);
 
     quality_audit_free(qaudit);
-    std::cout << "  -> OK: Estratos sin muestras o con evidencia insuficiente retornan UNCALIBRATED (LCB=0.0) y fuerzan fallback.\n";
+    std::cout << "  -> OK: Auditoria dual certifica R@10 y R@100 independientemente; fallback se activa si cualquiera falla.\n";
 }
 
 static void test_conservative_unseen_latency_stratum() {

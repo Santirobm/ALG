@@ -226,22 +226,23 @@ int main(int argc, char **argv) {
     csv_summary << "Dataset,Seed,K_Basins,VectorSigma,MixMode,Selectivity,Strategy,p50_us,p95_us,p99_us,MeanLatency_us,Recall10,Recall100,PctExact,PctHnsw,FallbackPct,PolicyRegretMean,PolicyRegret_p95,DiagnosticRegretMean,DiagnosticRegret_p95\n";
 
     std::ofstream csv_per_query(per_query_csv_path);
-    csv_per_query << "Dataset,Seed,Selectivity,Strategy,QueryID,TrueLabel,Component,DetectedRegime,Latency_us,Recall10,Recall100,ChosenEngine,FallbackTriggered,FallbackReason,PriorState,PostState,EmpiricalLCB,PolicySignedRegret_us,PolicyPositiveRegret_us,DiagnosticPositiveRegret_us\n";
+    csv_per_query << "Dataset,Seed,Selectivity,Strategy,QueryID,TrueLabel,Component,DetectedRegime,Latency_us,Recall10,Recall100,ChosenEngine,FallbackTriggered,FallbackReason,PriorState,PostState,EmpiricalLCB10,EmpiricalLCB100,PolicySignedRegret_us,PolicyPositiveRegret_us,DiagnosticPositiveRegret_us\n";
 
     struct StratDef {
         std::string name;
         enum { STRAT_EXACT, STRAT_HNSW, STRAT_STATIC15, STRAT_DISP } kind;
         DispatcherPolicy policy;
-        double target_recall;
+        double target_recall10;
+        double target_recall100;
     };
 
     std::vector<StratDef> strats = {
-        {"Fixed_ExactScan",       StratDef::STRAT_EXACT,    POLICY_EXACT,       1.0},
-        {"Fixed_hnswlib_ef50",    StratDef::STRAT_HNSW,     POLICY_APPROXIMATE, 0.0},
-        {"Static_Threshold_15pct",StratDef::STRAT_STATIC15, POLICY_APPROXIMATE, 0.0},
-        {"Dispatcher_EXACT",      StratDef::STRAT_DISP,     POLICY_EXACT,       1.0},
-        {"Dispatcher_BALANCED",   StratDef::STRAT_DISP,     POLICY_BALANCED,    0.95},
-        {"Dispatcher_APPROXIMATE",StratDef::STRAT_DISP,     POLICY_APPROXIMATE, 0.0}
+        {"Fixed_ExactScan",       StratDef::STRAT_EXACT,    POLICY_EXACT,       1.0,  1.0},
+        {"Fixed_hnswlib_ef50",    StratDef::STRAT_HNSW,     POLICY_APPROXIMATE, 0.0,  0.0},
+        {"Static_Threshold_15pct",StratDef::STRAT_STATIC15, POLICY_APPROXIMATE, 0.0,  0.0},
+        {"Dispatcher_EXACT",      StratDef::STRAT_DISP,     POLICY_EXACT,       1.0,  1.0},
+        {"Dispatcher_BALANCED",   StratDef::STRAT_DISP,     POLICY_BALANCED,    0.95, 0.90},
+        {"Dispatcher_APPROXIMATE",StratDef::STRAT_DISP,     POLICY_APPROXIMATE, 0.0,  0.0}
     };
 
     std::cout << "\n--- Ejecutando evaluacion en lazo cerrado sobre las 7 selectividades ---\n";
@@ -256,30 +257,57 @@ int main(int argc, char **argv) {
 
         FilterQueryContext filter_ctx{target_cat, el_ids.data(), n_el};
 
-        /* Warm-up y Pre-medicion de latencias de oraculo de referencia */
+        /* Warm-up y Pre-medicion robusta de latencias del oraculo:
+           3 rondas con intercalado aleatorio para neutralizar sesgo de orden y calor de cache */
         std::vector<double> exact_raw_lat(nq), hnsw_raw_lat(nq);
         HybridNeighbor nbuf_ref[100];
         HybridSearchOutput out_ref{nbuf_ref, 100, 0};
 
-        /* Warmup L1/L2 caches */
+        /* Warmup inicial */
         for (uint32_t w = 0; w < std::min(10U, nq); w++) {
             exact_scan_binding_search(&exact_ctx, queries[w].values, &filter_ctx, 100, 0, &out_ref);
             hnswlib_binding_search(&hnsw_ctx, queries[w].values, &filter_ctx, 100, 50, &out_ref);
         }
 
+        const uint32_t NUM_REF_ROUNDS = 3;
         for (uint32_t q = 0; q < nq; q++) {
             const float *query = queries[q].values;
-            LARGE_INTEGER qa, qb;
+            double exact_samples[NUM_REF_ROUNDS];
+            double hnsw_samples[NUM_REF_ROUNDS];
 
-            QueryPerformanceCounter(&qa);
-            exact_scan_binding_search(&exact_ctx, query, &filter_ctx, 100, 0, &out_ref);
-            QueryPerformanceCounter(&qb);
-            exact_raw_lat[q] = (double)(qb.QuadPart - qa.QuadPart) * 1e6 / (double)fq.QuadPart;
+            for (uint32_t rnd = 0; rnd < NUM_REF_ROUNDS; rnd++) {
+                LARGE_INTEGER qa, qb;
+                /* Intercalado determinista pseudo-aleatorio para evitar sesgo de primer ejecutante */
+                bool exact_first = (((q * 31U + rnd * 17U + seli) % 2U) == 0);
 
-            QueryPerformanceCounter(&qa);
-            hnswlib_binding_search(&hnsw_ctx, query, &filter_ctx, 100, 50, &out_ref);
-            QueryPerformanceCounter(&qb);
-            hnsw_raw_lat[q] = (double)(qb.QuadPart - qa.QuadPart) * 1e6 / (double)fq.QuadPart;
+                if (exact_first) {
+                    QueryPerformanceCounter(&qa);
+                    exact_scan_binding_search(&exact_ctx, query, &filter_ctx, 100, 0, &out_ref);
+                    QueryPerformanceCounter(&qb);
+                    exact_samples[rnd] = (double)(qb.QuadPart - qa.QuadPart) * 1e6 / (double)fq.QuadPart;
+
+                    QueryPerformanceCounter(&qa);
+                    hnswlib_binding_search(&hnsw_ctx, query, &filter_ctx, 100, 50, &out_ref);
+                    QueryPerformanceCounter(&qb);
+                    hnsw_samples[rnd] = (double)(qb.QuadPart - qa.QuadPart) * 1e6 / (double)fq.QuadPart;
+                } else {
+                    QueryPerformanceCounter(&qa);
+                    hnswlib_binding_search(&hnsw_ctx, query, &filter_ctx, 100, 50, &out_ref);
+                    QueryPerformanceCounter(&qb);
+                    hnsw_samples[rnd] = (double)(qb.QuadPart - qa.QuadPart) * 1e6 / (double)fq.QuadPart;
+
+                    QueryPerformanceCounter(&qa);
+                    exact_scan_binding_search(&exact_ctx, query, &filter_ctx, 100, 0, &out_ref);
+                    QueryPerformanceCounter(&qb);
+                    exact_samples[rnd] = (double)(qb.QuadPart - qa.QuadPart) * 1e6 / (double)fq.QuadPart;
+                }
+            }
+
+            /* Estadistica robusta: mediana de las repeticiones intercaladas */
+            std::sort(exact_samples, exact_samples + NUM_REF_ROUNDS);
+            std::sort(hnsw_samples, hnsw_samples + NUM_REF_ROUNDS);
+            exact_raw_lat[q] = exact_samples[NUM_REF_ROUNDS / 2];
+            hnsw_raw_lat[q]  = hnsw_samples[NUM_REF_ROUNDS / 2];
         }
 
         for (const auto &st : strats) {
@@ -297,7 +325,8 @@ int main(int argc, char **argv) {
 
             QualityAuditConfig qcfg;
             quality_audit_default_config(&qcfg);
-            qcfg.target_recall = st.target_recall;
+            qcfg.target_recall10 = st.target_recall10;
+            qcfg.target_recall100 = st.target_recall100;
             QualityAuditHarness *qual_audit = quality_audit_create(&qcfg);
 
             HybridNeighbor nbuf[100];
@@ -355,10 +384,10 @@ int main(int argc, char **argv) {
                     } else {
                         /* Evaluacion online de seguridad y fallback */
                         bool lat_fb = latency_calibrator_should_fallback(lat_cal, reg, sel_bp, ENGINE_HNSWLIB);
-                        double empirical_lcb = 0.0;
+                        double empirical_lcb10 = 0.0, empirical_lcb100 = 0.0;
                         bool qual_fb = false;
                         if (st.policy == POLICY_BALANCED) {
-                            qual_fb = quality_audit_should_fallback(qual_audit, reg, sel_bp, &empirical_lcb);
+                            qual_fb = quality_audit_should_fallback(qual_audit, reg, sel_bp, &empirical_lcb10, &empirical_lcb100);
                         }
 
                         bool force_fallback = (reg == QUERY_UNKNOWN || lat_fb || qual_fb);
@@ -386,16 +415,17 @@ int main(int argc, char **argv) {
                                 QueryPerformanceCounter(&sb);
                                 double s_lat = (double)(sb.QuadPart - sa.QuadPart) * 1e6 / (double)fq.QuadPart;
                                 double s_r10 = compute_recall_at_k(shadow_out, ground_truth[seli][q], 10);
+                                double s_r100 = compute_recall_at_k(shadow_out, ground_truth[seli][q], 100);
 
                                 EngineEstimate h_est = cost_model_hnsw_predict(&hm, reg, sel_pct, 100);
                                 DriftReason d_reason = DRIFT_NONE;
                                 latency_calibrator_record(lat_cal, reg, sel_bp, ENGINE_HNSWLIB, s_lat, h_est.cost_us, &d_reason);
-                                quality_audit_record(qual_audit, reg, sel_bp, s_r10, s_lat);
+                                quality_audit_record(qual_audit, reg, sel_bp, s_r10, s_r100, s_lat);
                             }
                         } else {
                             /* Despacho nominal adaptativo */
                             QueryFeatures qf{n_el, nv, dim, reg, sel_pct};
-                            QualityRequirements qr{st.policy, st.target_recall, 0.0, 100};
+                            QualityRequirements qr{st.policy, st.target_recall10, 0.0, 100};
 
                             QueryPerformanceCounter(&qa);
                             hybrid_search(&bindings, &qf, &qr, &em, &hm, query, &filter_ctx, &out, &meta);
@@ -412,7 +442,8 @@ int main(int argc, char **argv) {
                                 latency_calibrator_record(lat_cal, reg, sel_bp, ENGINE_HNSWLIB, q_lat, h_est.cost_us, &d_reason);
                                 if (quality_audit_should_sample(qual_audit, q)) {
                                     double r10_obs = compute_recall_at_k(out, ground_truth[seli][q], 10);
-                                    quality_audit_record(qual_audit, reg, sel_bp, r10_obs, 0.0);
+                                    double r100_obs = compute_recall_at_k(out, ground_truth[seli][q], 100);
+                                    quality_audit_record(qual_audit, reg, sel_bp, r10_obs, r100_obs, 0.0);
                                 }
                             }
                         }
@@ -429,13 +460,13 @@ int main(int argc, char **argv) {
                 recalls10[q] = r10;
                 recalls100[q] = r100;
 
-                /* Obtener estado posterior del estrato y LCB empírico */
+                /* Obtener estado posterior del estrato y LCB empíricos duales */
                 StratumCalibrator sinfo_post{};
                 latency_calibrator_get_stratum(lat_cal, reg, sel_bp, ENGINE_HNSWLIB, &sinfo_post);
                 StratumState post_state = sinfo_post.state;
 
-                double cur_lcb = 0.0;
-                quality_audit_get_state(qual_audit, reg, sel_bp, &cur_lcb);
+                double cur_lcb10 = 0.0, cur_lcb100 = 0.0;
+                quality_audit_get_state(qual_audit, reg, sel_bp, &cur_lcb10, &cur_lcb100);
 
                 /* Evaluacion estricta de Regret por Politica vs Diagnostico */
                 EngineEstimate h_est_cand = cost_model_hnsw_predict(&hm, reg, sel_pct, 100);
@@ -443,7 +474,8 @@ int main(int argc, char **argv) {
                 if (st.policy == POLICY_APPROXIMATE) {
                     hnsw_admissible = true;
                 } else if (st.policy == POLICY_BALANCED) {
-                    hnsw_admissible = (cur_lcb >= 0.95) || (h_est_cand.supported && h_est_cand.recall_lcb >= 0.95);
+                    hnsw_admissible = (cur_lcb10 >= st.target_recall10 && cur_lcb100 >= st.target_recall100) ||
+                                      (h_est_cand.supported && h_est_cand.recall_lcb >= st.target_recall10 && h_est_cand.recall100 >= st.target_recall100);
                 }
 
                 RegretEvaluation r_eval = evaluate_regret(st.policy, q_lat, exact_raw_lat[q], hnsw_raw_lat[q],
@@ -461,7 +493,7 @@ int main(int argc, char **argv) {
                               << q_lat << "," << r10 << "," << r100 << ","
                               << (chosen_id == ENGINE_EXACT_SCAN ? "EXACT" : "HNSW") << ","
                               << (fb_trig ? 1 : 0) << "," << fb_reason << ","
-                              << prior_state << "," << post_state << "," << cur_lcb << ","
+                              << prior_state << "," << post_state << "," << cur_lcb10 << "," << cur_lcb100 << ","
                               << r_eval.policy_signed_regret_us << "," << r_eval.policy_positive_regret_us << ","
                               << r_eval.diagnostic_positive_regret_us << "\n";
             }

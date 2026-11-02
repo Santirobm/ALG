@@ -303,11 +303,12 @@ bool latency_calibrator_get_stratum(const LatencyCalibrator *cal,
 }
 
 /* ========================================================================= */
-/* --- Módulo B: Auditoría de Calidad (Recall Audit Harness) ---             */
+/* --- Módulo B: Auditoría de Calidad Dual (Recall@10 y Recall@100) ---      */
 /* ========================================================================= */
 
 struct QualityStratumData {
-    std::deque<double> recall_window;
+    std::deque<double> recall10_window;
+    std::deque<double> recall100_window;
     uint64_t audited_count;
     uint32_t fallback_triggers;
 };
@@ -320,7 +321,8 @@ struct QualityAuditHarness {
 
 void quality_audit_default_config(QualityAuditConfig *cfg) {
     if (!cfg) return;
-    cfg->target_recall = 0.95;
+    cfg->target_recall10 = 0.95;
+    cfg->target_recall100 = 0.90;
     cfg->audit_rate = 0.05;         /* 5% de consultas en shadow audit */
     cfg->audit_window_size = 50;
     cfg->min_audit_samples = 10;
@@ -360,7 +362,8 @@ bool quality_audit_should_sample(QualityAuditHarness *audit, uint64_t query_inde
 void quality_audit_record(QualityAuditHarness *audit,
                           QueryRegime regime,
                           uint32_t selectivity_bp,
-                          double observed_recall,
+                          double observed_recall10,
+                          double observed_recall100,
                           double shadow_overhead_us) {
     if (!audit) return;
     audit->metrics.audited_queries++;
@@ -370,37 +373,20 @@ void quality_audit_record(QualityAuditHarness *audit,
     QualityStratumData &data = audit->strata[key];
     data.audited_count++;
 
-    data.recall_window.push_back(observed_recall);
-    if (data.recall_window.size() > audit->config.audit_window_size) {
-        data.recall_window.pop_front();
+    data.recall10_window.push_back(observed_recall10);
+    if (data.recall10_window.size() > audit->config.audit_window_size) {
+        data.recall10_window.pop_front();
+    }
+
+    data.recall100_window.push_back(observed_recall100);
+    if (data.recall100_window.size() > audit->config.audit_window_size) {
+        data.recall100_window.pop_front();
     }
 }
 
-QualityStratumState quality_audit_get_state(const QualityAuditHarness *audit,
-                                            QueryRegime regime,
-                                            uint32_t selectivity_bp,
-                                            double *out_empirical_lcb) {
-    if (!audit) {
-        if (out_empirical_lcb) *out_empirical_lcb = 0.0;
-        return QUALITY_STATE_UNCALIBRATED;
-    }
-
-    QualityStratumKey key = make_quality_key(regime, selectivity_bp);
-    auto it = audit->strata.find(key);
-    if (it == audit->strata.end()) {
-        /* Estrato no visto: NO asignar LCB 1.0 artificial. Es UNCALIBRATED (0.0) */
-        if (out_empirical_lcb) *out_empirical_lcb = 0.0;
-        return QUALITY_STATE_UNCALIBRATED;
-    }
-
-    const auto &w = it->second.recall_window;
+static double compute_lcb_from_window(const std::deque<double> &w, double confidence_z) {
     size_t n = w.size();
-    if (n < audit->config.min_audit_samples) {
-        /* Muestras insuficientes para certificar confianza: UNCALIBRATED */
-        if (out_empirical_lcb) *out_empirical_lcb = 0.0;
-        return QUALITY_STATE_UNCALIBRATED;
-    }
-
+    if (n == 0) return 0.0;
     double sum = 0.0;
     for (double r : w) sum += r;
     double mean = sum / n;
@@ -415,13 +401,52 @@ QualityStratumState quality_audit_get_state(const QualityAuditHarness *audit,
         var = sq / (n - 1);
     }
     double se = std::sqrt(var / n);
-    double lcb = mean - (audit->config.confidence_z * se);
+    double lcb = mean - (confidence_z * se);
     if (lcb < 0.0) lcb = 0.0;
     if (lcb > 1.0) lcb = 1.0;
+    return lcb;
+}
 
-    if (out_empirical_lcb) *out_empirical_lcb = lcb;
+QualityStratumState quality_audit_get_state(const QualityAuditHarness *audit,
+                                            QueryRegime regime,
+                                            uint32_t selectivity_bp,
+                                            double *out_lcb10,
+                                            double *out_lcb100) {
+    if (!audit) {
+        if (out_lcb10) *out_lcb10 = 0.0;
+        if (out_lcb100) *out_lcb100 = 0.0;
+        return QUALITY_STATE_UNCALIBRATED;
+    }
 
-    if (lcb < audit->config.target_recall) {
+    QualityStratumKey key = make_quality_key(regime, selectivity_bp);
+    auto it = audit->strata.find(key);
+    if (it == audit->strata.end()) {
+        /* Estrato no visto: UNCALIBRATED (0.0) */
+        if (out_lcb10) *out_lcb10 = 0.0;
+        if (out_lcb100) *out_lcb100 = 0.0;
+        return QUALITY_STATE_UNCALIBRATED;
+    }
+
+    const auto &w10 = it->second.recall10_window;
+    const auto &w100 = it->second.recall100_window;
+    size_t n10 = w10.size();
+    size_t n100 = w100.size();
+
+    if (n10 < audit->config.min_audit_samples || n100 < audit->config.min_audit_samples) {
+        /* Muestras insuficientes en alguna de las metricas: UNCALIBRATED */
+        if (out_lcb10) *out_lcb10 = 0.0;
+        if (out_lcb100) *out_lcb100 = 0.0;
+        return QUALITY_STATE_UNCALIBRATED;
+    }
+
+    double lcb10 = compute_lcb_from_window(w10, audit->config.confidence_z);
+    double lcb100 = compute_lcb_from_window(w100, audit->config.confidence_z);
+
+    if (out_lcb10) *out_lcb10 = lcb10;
+    if (out_lcb100) *out_lcb100 = lcb100;
+
+    /* Certificacion dual: AMBAS metricas deben superar su objetivo */
+    if (lcb10 < audit->config.target_recall10 || lcb100 < audit->config.target_recall100) {
         return QUALITY_STATE_DEGRADED;
     }
     return QUALITY_STATE_HEALTHY;
@@ -430,8 +455,9 @@ QualityStratumState quality_audit_get_state(const QualityAuditHarness *audit,
 bool quality_audit_should_fallback(const QualityAuditHarness *audit,
                                    QueryRegime regime,
                                    uint32_t selectivity_bp,
-                                   double *out_empirical_lcb) {
-    QualityStratumState state = quality_audit_get_state(audit, regime, selectivity_bp, out_empirical_lcb);
+                                   double *out_lcb10,
+                                   double *out_lcb100) {
+    QualityStratumState state = quality_audit_get_state(audit, regime, selectivity_bp, out_lcb10, out_lcb100);
     if (state == QUALITY_STATE_UNCALIBRATED || state == QUALITY_STATE_DEGRADED) {
         if (audit) {
             const_cast<QualityAuditHarness*>(audit)->metrics.quality_fallback_triggers++;
@@ -444,15 +470,16 @@ bool quality_audit_should_fallback(const QualityAuditHarness *audit,
 bool quality_audit_is_calibrated(const QualityAuditHarness *audit,
                                  QueryRegime regime,
                                  uint32_t selectivity_bp) {
-    double lcb = 0.0;
-    return (quality_audit_get_state(audit, regime, selectivity_bp, &lcb) != QUALITY_STATE_UNCALIBRATED);
+    double l10 = 0.0, l100 = 0.0;
+    return (quality_audit_get_state(audit, regime, selectivity_bp, &l10, &l100) != QUALITY_STATE_UNCALIBRATED);
 }
 
 bool quality_audit_is_degraded(const QualityAuditHarness *audit,
                                QueryRegime regime,
                                uint32_t selectivity_bp,
-                               double *out_empirical_lcb) {
-    return (quality_audit_get_state(audit, regime, selectivity_bp, out_empirical_lcb) == QUALITY_STATE_DEGRADED);
+                               double *out_lcb10,
+                               double *out_lcb100) {
+    return (quality_audit_get_state(audit, regime, selectivity_bp, out_lcb10, out_lcb100) == QUALITY_STATE_DEGRADED);
 }
 
 void quality_audit_get_metrics(const QualityAuditHarness *audit, QualityAuditMetrics *out_metrics) {
