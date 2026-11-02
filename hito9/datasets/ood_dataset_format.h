@@ -13,6 +13,12 @@ typedef enum {
 } OODQueryLabel;
 
 typedef enum {
+    OOD_COMPONENT_LOCAL_BASIN = 0,
+    OOD_COMPONENT_LOCAL_UNIFORM = 1,
+    OOD_COMPONENT_ADVERSARIAL_UNIFORM = 2
+} OODQueryComponent;
+
+typedef enum {
     OOD_MIX_R = 0,
     OOD_MIX_D = 1,
     OOD_MIX_50_50 = 2
@@ -39,7 +45,8 @@ typedef struct {
 typedef struct {
     float values[HITO9_OOD_DIM];
     uint8_t label;
-    uint8_t reserved[3];
+    uint8_t component;
+    uint8_t reserved[2];
 } Hito9OODQueryRecord;
 #pragma pack(pop)
 
