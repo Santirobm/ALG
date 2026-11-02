@@ -100,9 +100,11 @@ int main(int argc, char **argv) {
     }
 
     uint64_t point_rng = seed ^ 0x3344556677889900ULL;
+    for (uint32_t c = 0; c < k; ++c) basin_nodes[c] = UINT32_MAX;
     for (uint32_t i = 0; i < nv; ++i) {
         uint32_t c = (uint32_t)(rng_next(&point_rng) % k);
         const float *center = centroids + (size_t)c * HITO9_OOD_DIM;
+        if (basin_nodes[c] == UINT32_MAX) basin_nodes[c] = i;
         float *v = vectors + (size_t)i * HITO9_OOD_DIM;
         for (uint32_t d = 0; d < HITO9_OOD_DIM; ++d) v[d] = center[d] + sigma * gaussian01(&point_rng);
         normalize(v);
@@ -115,8 +117,13 @@ int main(int argc, char **argv) {
         categories[i] = (uint32_t)(z % 10000ULL);
     }
 
-    uint64_t basin_rng = seed ^ 0xB451A5EED1234567ULL;
-    for (uint32_t b = 0; b < k; ++b) basin_nodes[b] = (uint32_t)(rng_next(&basin_rng) % nv);
+    for (uint32_t b = 0; b < k; ++b) {
+        if (basin_nodes[b] == UINT32_MAX) {
+            fprintf(stderr, "Generated corpus did not populate basin %u.\\n", b);
+            free(centroids); free(vectors); free(categories); free(basin_nodes); free(queries);
+            return 1;
+        }
+    }
 
     uint64_t query_rng = seed ^ 0xFEEDFACECAFEBEEFULL;
     const uint32_t local_count = (mix == OOD_MIX_R) ? nq :
@@ -131,6 +138,8 @@ int main(int argc, char **argv) {
 
         /* R distribution: 85% near one of K sampled basin nodes, 15% uniform. */
         int concentrated = is_local && ((rng_next(&query_rng) % 100U) < 85U);
+        if (!is_local) rec->component = OOD_COMPONENT_ADVERSARIAL_UNIFORM;
+        else rec->component = concentrated ? OOD_COMPONENT_LOCAL_BASIN : OOD_COMPONENT_LOCAL_UNIFORM;
         if (concentrated) {
             uint32_t b = (uint32_t)(rng_next(&query_rng) % k);
             const float *base = vectors + (size_t)basin_nodes[b] * HITO9_OOD_DIM;
