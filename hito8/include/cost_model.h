@@ -7,7 +7,7 @@
 extern "C" {
 #endif
 
-typedef struct {
+typedef struct ExactCostModel {
     double exact_intercept_us;
     double exact_per_eligible_us;
     double min_eligible_count;
@@ -15,7 +15,7 @@ typedef struct {
     bool calibrated;
 } ExactCostModel;
 
-typedef struct {
+typedef struct HnswCalibrationPoint {
     QueryRegime regime;
     double selectivity_pct;
     uint32_t ef_search;
@@ -28,7 +28,7 @@ typedef struct {
     uint64_t query_count;
 } HnswCalibrationPoint;
 
-typedef struct {
+typedef struct HnswCostModel {
     const HnswCalibrationPoint *points;
     size_t point_count;
 } HnswCostModel;
