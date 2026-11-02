@@ -1,0 +1,37 @@
+{
+  "schema_version": 1,
+  "dimension": 64,
+  "num_vectors": 100000,
+  "num_queries_per_scenario": 1000,
+  "selectivities_deci_percent": [100, 125, 150, 175, 200, 225, 250],
+  "query_modes": ["R", "D", "M50/50"],
+  "basins": [16, 64, 128],
+  "vector_sigma": [0.03, 0.09, 0.25],
+  "local_query_sigma": 0.05,
+  "local_query_concentrated_fraction_percent": 85,
+  "ground_truth": {
+    "top_k": 100,
+    "compute_from_saved_vectors_and_categories": true,
+    "never_reuse_ground_truth_across_different_seed_or_geometry": true
+  },
+  "seed_policy": {
+    "calibration_seeds": [1, 2, 3, 4, 5],
+    "blind_test_seeds": [6, 7],
+    "ood_test_seeds": [8, 9, 10],
+    "do_not_fit_probe_or_cost_models_on_blind_or_ood_test_seeds": true
+  },
+  "primary_matrix": [
+    {"query_mode": "R", "basins": 64, "sigma": 0.03},
+    {"query_mode": "R", "basins": 64, "sigma": 0.25},
+    {"query_mode": "D", "basins": 64, "sigma": 0.09},
+    {"query_mode": "M50/50", "basins": 64, "sigma": 0.09},
+    {"query_mode": "R", "basins": 16, "sigma": 0.09},
+    {"query_mode": "R", "basins": 128, "sigma": 0.09}
+  ],
+  "full_factorial": {
+    "query_modes": ["R", "D", "M50/50"],
+    "basins": [16, 64, 128],
+    "sigma": [0.03, 0.09, 0.25],
+    "note": "Run as secondary/ablation matrix after primary matrix; avoid selecting cases based on observed performance."
+  }
+}
